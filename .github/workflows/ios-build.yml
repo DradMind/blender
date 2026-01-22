@@ -1,11 +1,11 @@
-name: Build Blender for iPad (Symlink Fix)
+name: Build Blender for iPad (LFS Fix)
 
 on:
   workflow_dispatch: # Manual trigger
 
 jobs:
   build:
-    runs-on: macos-15  # Using Xcode 16+
+    runs-on: macos-15
     
     steps:
     - name: Select Latest Xcode
@@ -16,78 +16,52 @@ jobs:
     - name: Install System Tools
       run: |
         brew install cmake git-lfs svn
-        git lfs install
+        git lfs install --skip-smudge
 
     - name: Checkout Code
       run: |
+        # Clone without trying to download LFS files yet (speed optimization)
         git clone --branch ios --depth 1 https://projects.blender.org/blender/blender.git blender
 
-    - name: Download Libraries
+    - name: Force LFS Download (The Real Fix)
       working-directory: ./blender
       run: |
-        git lfs pull
-        make update
-        python3 build_files/utils/make_update.py --use-ios-libraries
-
-    - name: Fix Library Names (Symlinks)
-      id: fix_libs
-      working-directory: ./blender
-      run: |
-        # 1. Locate the real library folder
-        PYTHON_PATH=$(find . -path "*/ios_arm64/python" -type d -print -quit)
-        if [ -z "$PYTHON_PATH" ]; then
-          echo "❌ ERROR: Download failed completely."
-          exit 1
+        # Initialize LFS explicitly
+        git lfs install --local
+        
+        echo "Fetching real LFS data..."
+        # This forces git to download the actual binary content
+        git lfs fetch origin --all
+        git lfs checkout
+        
+        # Verify if it worked (Check file size of a known library)
+        # libmath.a should be much larger than 1KB
+        FILE_SIZE=$(stat -f%z lib/ios_arm64/embree/lib/libmath.a 2>/dev/null || echo 0)
+        
+        if [ "$FILE_SIZE" -lt 1000 ]; then
+           echo "❌ ERROR: LFS Download failed again. File size is only $FILE_SIZE bytes."
+           # Fallback: Try manual update script again as a last resort
+           python3 build_files/utils/make_update.py --use-ios-libraries
+        else
+           echo "✅ SUCCESS: Real libraries downloaded (Size: $FILE_SIZE bytes)"
         fi
-        
-        # Calculate the root 'lib' folder
-        # Path: .../lib/ios_arm64/python
-        LIB_ROOT=$(dirname $(dirname "$PYTHON_PATH"))
-        ABS_LIB_ROOT=$(cd "$LIB_ROOT" && pwd)
-        
-        echo "✅ FOUND LIBS AT: $ABS_LIB_ROOT"
-        
-        # 2. CREATE SYMLINKS (The Fix)
-        # We create aliases so 'arm64' and 'ios' all point to 'ios_arm64'
-        cd "$ABS_LIB_ROOT"
-        
-        if [ ! -d "arm64" ]; then
-            echo "Creating 'arm64' shortcut..."
-            ln -s ios_arm64 arm64
-        fi
-        
-        if [ ! -d "ios" ]; then
-             echo "Creating 'ios' shortcut..."
-             ln -s ios_arm64 ios
-        fi
-        
-        # 3. LFS SANITY CHECK
-        # Check if libraries are real files or just tiny pointers (less than 1KB)
-        echo "Checking file sizes..."
-        SMALL_FILES=$(find ios_arm64 -name "lib*.a" -size -1k | head -n 5)
-        if [ ! -z "$SMALL_FILES" ]; then
-           echo "❌ CRITICAL ERROR: Git LFS failed! These files are empty pointers:"
-           echo "$SMALL_FILES"
-           echo "You need to fix Git LFS quotas or authentication."
-           exit 1
-        fi
-        
-        # Pass the path to the next step
-        echo "BLENDER_LIBDIR=$ABS_LIB_ROOT" >> $GITHUB_ENV
 
     - name: Configure CMake
       run: |
         mkdir ../build_ios
         cd ../build_ios
         
-        echo "Configuring CMake with Fixed Libs..."
+        # Find the absolute path to libs
+        LIB_ABS=$(cd ../blender/lib && pwd)
+        
+        echo "Configuring with libs at: $LIB_ABS"
         
         cmake -G Xcode \
           -DCMAKE_SYSTEM_NAME=iOS \
           -DCMAKE_OSX_ARCHITECTURES=arm64 \
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO \
-          -DLIBDIR="${{ env.BLENDER_LIBDIR }}" \
+          -DLIBDIR="$LIB_ABS" \
           ../blender
 
     - name: Build Blender App
