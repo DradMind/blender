@@ -6,58 +6,60 @@ on:
 jobs:
   build:
     runs-on: macos-14  # Apple Silicon (M1/M2) runner
-    env:
-      # SIMPLIFICATION: We force the library location using this variable.
-      # This stops the script from putting files in "sibling" or hidden folders.
-      BLENDER_LIBDIR: ${{ github.workspace }}/blender/lib
-
+    
     steps:
     - name: Install System Tools
       run: |
         brew install cmake git-lfs svn
         git lfs install
 
-    - name: Checkout Code (Official Server)
+    - name: Checkout Code (To 'src' folder)
       run: |
-        # Clone explicitly from Blender's official server
-        git clone --branch ios --depth 1 https://projects.blender.org/blender/blender.git blender
+        # We clone into a folder named 'src' instead of 'blender'
+        # This allows us to create the 'lib' sibling structure cleanly.
+        git clone --branch ios --depth 1 https://projects.blender.org/blender/blender.git src
 
-    - name: Download Libraries (Forced Location)
-      working-directory: ./blender
+    - name: Download Libraries (Sibling Layout)
+      working-directory: ./src
       run: |
-        # 1. Pull LFS data
+        # 1. Pull LFS data inside source
         git lfs pull
         
-        # 2. Update standard libraries (Host)
-        # Because we set BLENDER_LIBDIR above, this MUST put them in blender/lib
+        # 2. Update standard libraries
+        # Since we are in './src', 'make update' defaults to downloading into '../lib'
+        # This creates the 'lib' folder at the root of the workspace (Sibling to src)
         make update
         
         # 3. Download iOS libraries
+        # This will also populate '../lib/ios_arm64'
         python3 build_files/utils/make_update.py --use-ios-libraries
 
-    - name: Verify Download
-      working-directory: ./blender
+    - name: Verify Sibling Structure
       run: |
-        # This is a sanity check. If this fails, the download failed (network/server issue).
-        echo "Checking for iOS libraries in: $BLENDER_LIBDIR/ios_arm64"
-        ls -R lib/ios_arm64/python || exit 1
+        # DEBUG: Prove that the folders are neighbors
+        echo "Listing Workspace Root:"
+        ls -d *
+        
+        echo "Checking for libraries in ../lib (relative to src):"
+        ls lib/ios_arm64/python/bin/python3.11 || exit 1
 
     - name: Configure CMake
       run: |
-        mkdir build_ios
-        cd build_ios
+        # Create a build folder at the ROOT (Sibling to src and lib)
+        mkdir build
+        cd build
         
-        # We explicitly tell CMake: "The libs are here."
+        # We run CMake pointing to the sibling 'src' directory (../src)
+        # CMake will automatically look for libraries in ../lib (which is correct now)
         cmake -G Xcode \
           -DCMAKE_SYSTEM_NAME=iOS \
           -DCMAKE_OSX_ARCHITECTURES=arm64 \
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO \
-          -DLIBDIR="${{ env.BLENDER_LIBDIR }}" \
-          ../blender
+          ../src
 
     - name: Build Blender App
-      working-directory: ./build_ios
+      working-directory: ./build
       run: |
         xcodebuild -project Blender.xcodeproj \
           -scheme Blender \
@@ -69,7 +71,7 @@ jobs:
 
     - name: Package into IPA
       run: |
-        cd build_ios/Release-iphoneos
+        cd build/Release-iphoneos
         mkdir Payload
         cp -r Blender.app Payload/
         zip -r Blender_iPad.ipa Payload
@@ -78,4 +80,4 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: Blender-iPad-Build
-        path: build_ios/Release-iphoneos/Blender_iPad.ipa
+        path: build/Release-iphoneos/Blender_iPad.ipa
