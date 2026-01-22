@@ -1,36 +1,47 @@
 name: Build Blender for iPad
 
 on:
-  workflow_dispatch: # Allows you to manually trigger the build with a button click
+  workflow_dispatch: # Manual trigger button
 
 jobs:
   build:
-    runs-on: macos-14  # Uses an M1 (Apple Silicon) runner. Critical for speed.
+    runs-on: macos-14  # Uses M1/M2 (Apple Silicon). Critical for this build.
     
     steps:
     - name: Checkout Code
       uses: actions/checkout@v4
       with:
         repository: blender/blender
-        ref: ios  # IMPORTANT: We are targeting the specific 'ios' branch
+        ref: ios  # Targets the 'ios' branch. 
         path: blender
 
-    - name: Install Dependencies (Brew)
+    - name: Install System Tools
       run: |
         brew install cmake git-lfs svn
         git lfs install
 
-    - name: Download Blender Libraries
-      working-directory: ./blender
+    - name: Download Libraries (Manual Fix)
+      # This step fixes your specific "Missing Libs" error by forcing the download
+      # to the exact location CMake expects.
       run: |
-        # This command downloads the pre-compiled libraries needed for building
-        make update
+        # Ensure we are at the root of the workspace
+        # We need a folder structure where 'lib' is a sibling of 'blender'
+        
+        mkdir -p lib
+        
+        echo "Downloading iOS Libraries (This may take 5-10 minutes)..."
+        svn checkout https://svn.blender.org/svnroot/bf-blender/trunk/lib/ios_arm64 lib/ios_arm64 --quiet
+        
+        echo "Downloading macOS Libraries (Needed for host tools)..."
+        svn checkout https://svn.blender.org/svnroot/bf-blender/trunk/lib/macos_arm64 lib/macos_arm64 --quiet
 
-    - name: Configure CMake for iOS
+    - name: Configure CMake
       run: |
         mkdir build_ios
         cd build_ios
-        # We explicitly tell CMake to build for iOS (arm64) using Xcode
+        
+        # We point CMake to the source code (../blender).
+        # It will automatically find the libs we downloaded in ../lib
         cmake -G Xcode \
           -DCMAKE_SYSTEM_NAME=iOS \
           -DCMAKE_OSX_ARCHITECTURES=arm64 \
@@ -38,10 +49,10 @@ jobs:
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO \
           ../blender
 
-    - name: Build with Xcode
+    - name: Build Blender App
       working-directory: ./build_ios
       run: |
-        # This builds the app without trying to sign it (avoids certificate errors)
+        # Use xcodebuild to compile the project
         xcodebuild -project Blender.xcodeproj \
           -scheme Blender \
           -configuration Release \
@@ -50,17 +61,16 @@ jobs:
           CODE_SIGNING_REQUIRED=NO \
           CODE_SIGNING_ALLOWED=NO
 
-    - name: Prepare Artifact
+    - name: Package into IPA
       run: |
-        # Navigate to where Xcode put the App
+        # Create the Payload structure required for an IPA file
         cd build_ios/Release-iphoneos
         mkdir Payload
         cp -r Blender.app Payload/
-        # Zip it into an .ipa file manually
-        zip -r Blender_iPad_Unsigned.ipa Payload
+        zip -r Blender_iPad.ipa Payload
 
-    - name: Upload IPA
+    - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
         name: Blender-iPad-Build
-        path: build_ios/Release-iphoneos/Blender_iPad_Unsigned.ipa
+        path: build_ios/Release-iphoneos/Blender_iPad.ipa
