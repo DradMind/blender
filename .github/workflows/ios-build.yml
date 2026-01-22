@@ -1,0 +1,66 @@
+name: Build Blender for iPad
+
+on:
+  workflow_dispatch: # Allows you to manually trigger the build with a button click
+
+jobs:
+  build:
+    runs-on: macos-14  # Uses an M1 (Apple Silicon) runner. Critical for speed.
+    
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+      with:
+        repository: blender/blender
+        ref: ios  # IMPORTANT: We are targeting the specific 'ios' branch
+        path: blender
+
+    - name: Install Dependencies (Brew)
+      run: |
+        brew install cmake git-lfs svn
+        git lfs install
+
+    - name: Download Blender Libraries
+      working-directory: ./blender
+      run: |
+        # This command downloads the pre-compiled libraries needed for building
+        make update
+
+    - name: Configure CMake for iOS
+      run: |
+        mkdir build_ios
+        cd build_ios
+        # We explicitly tell CMake to build for iOS (arm64) using Xcode
+        cmake -G Xcode \
+          -DCMAKE_SYSTEM_NAME=iOS \
+          -DCMAKE_OSX_ARCHITECTURES=arm64 \
+          -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
+          -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO \
+          ../blender
+
+    - name: Build with Xcode
+      working-directory: ./build_ios
+      run: |
+        # This builds the app without trying to sign it (avoids certificate errors)
+        xcodebuild -project Blender.xcodeproj \
+          -scheme Blender \
+          -configuration Release \
+          -destination 'generic/platform=iOS' \
+          CODE_SIGN_IDENTITY="" \
+          CODE_SIGNING_REQUIRED=NO \
+          CODE_SIGNING_ALLOWED=NO
+
+    - name: Prepare Artifact
+      run: |
+        # Navigate to where Xcode put the App
+        cd build_ios/Release-iphoneos
+        mkdir Payload
+        cp -r Blender.app Payload/
+        # Zip it into an .ipa file manually
+        zip -r Blender_iPad_Unsigned.ipa Payload
+
+    - name: Upload IPA
+      uses: actions/upload-artifact@v4
+      with:
+        name: Blender-iPad-Build
+        path: build_ios/Release-iphoneos/Blender_iPad_Unsigned.ipa
