@@ -8,30 +8,27 @@ jobs:
     runs-on: macos-14  # Apple Silicon (M1/M2) runner
     
     steps:
-    - name: Checkout Code
-      uses: actions/checkout@v4
-      with:
-        repository: blender/blender
-        ref: ios  # Target the experimental iOS branch
-        path: blender
-
     - name: Install System Tools
       run: |
         brew install cmake git-lfs svn
         git lfs install
 
+    - name: Checkout Code (From Official Server)
+      run: |
+        # We clone MANUALLY from Blender's official server (Gitea)
+        # The GitHub mirror (blender/blender) is missing LFS files for this branch.
+        git clone --branch ios --depth 1 https://projects.blender.org/blender/blender.git blender
+
     - name: Download Libraries
       working-directory: ./blender
       run: |
-        # 1. Ensure Git LFS files are downloaded
+        # 1. Ensure Git LFS files are pulled from the OFFICIAL server
         git lfs pull
         
         # 2. Update standard libraries (Host: macOS ARM64)
-        # We use 'make update' which automatically calls the python script with correct args
         make update
         
         # 3. Download iOS-specific libraries
-        # This uses the specific flag added for the iOS branch
         python3 build_files/utils/make_update.py --use-ios-libraries
 
     - name: Configure CMake
