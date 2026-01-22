@@ -1,11 +1,11 @@
-name: Build Blender for iPad (LFS Fix)
+name: Build Blender for iPad (Absolute Paths)
 
 on:
   workflow_dispatch: # Manual trigger
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-15 # Xcode 16+
     
     steps:
     - name: Select Latest Xcode
@@ -20,53 +20,76 @@ jobs:
 
     - name: Checkout Code
       run: |
-        # Clone without trying to download LFS files yet (speed optimization)
-        git clone --branch ios --depth 1 https://projects.blender.org/blender/blender.git blender
+        # Clone explicitly into 'blender_src' folder to avoid naming confusion
+        # Path will be: ${{ github.workspace }}/blender_src
+        git clone --branch ios --depth 1 https://projects.blender.org/blender/blender.git blender_src
 
-    - name: Force LFS Download (The Real Fix)
-      working-directory: ./blender
+    - name: Force LFS Download
+      working-directory: ${{ github.workspace }}/blender_src
       run: |
-        # Initialize LFS explicitly
+        echo "Initializing LFS..."
         git lfs install --local
         
-        echo "Fetching real LFS data..."
-        # This forces git to download the actual binary content
+        echo "Fetching LFS objects..."
         git lfs fetch origin --all
         git lfs checkout
         
-        # Verify if it worked (Check file size of a known library)
-        # libmath.a should be much larger than 1KB
-        FILE_SIZE=$(stat -f%z lib/ios_arm64/embree/lib/libmath.a 2>/dev/null || echo 0)
+        # Verify LFS by checking a known heavy file (libmath.a)
+        # We use 'ls -lh' to print the size in the logs for debugging
+        echo "Verifying file size of libmath.a:"
+        ls -lh lib/ios_arm64/embree/lib/libmath.a || echo "File not found"
+
+    - name: Verify & Locate Libraries (Diagnostic)
+      id: locate
+      run: |
+        echo "========================================"
+        echo "   ABSOLUTE PATH DIAGNOSTIC REPORT      "
+        echo "========================================"
         
-        if [ "$FILE_SIZE" -lt 1000 ]; then
-           echo "❌ ERROR: LFS Download failed again. File size is only $FILE_SIZE bytes."
-           # Fallback: Try manual update script again as a last resort
-           python3 build_files/utils/make_update.py --use-ios-libraries
+        # Define the exact expected path
+        EXPECTED_LIB="${{ github.workspace }}/blender_src/lib"
+        
+        echo "Looking for libraries at: $EXPECTED_LIB"
+        
+        if [ -d "$EXPECTED_LIB" ]; then
+            echo "✅ SUCCESS: Library folder exists."
+            echo "Contents of lib/ios_arm64:"
+            ls "$EXPECTED_LIB/ios_arm64" | head -n 5
         else
-           echo "✅ SUCCESS: Real libraries downloaded (Size: $FILE_SIZE bytes)"
+            echo "❌ CRITICAL FAILURE: Library folder missing at $EXPECTED_LIB"
+            echo "Listing Workspace Root to see what went wrong:"
+            ls -F "${{ github.workspace }}"
+            exit 1
         fi
+        
+        # Save absolute path to env
+        echo "BLENDER_LIBDIR=$EXPECTED_LIB" >> $GITHUB_ENV
 
     - name: Configure CMake
       run: |
-        mkdir ../build_ios
-        cd ../build_ios
+        # Create build folder using ABSOLUTE path
+        BUILD_DIR="${{ github.workspace }}/build_ios"
+        SRC_DIR="${{ github.workspace }}/blender_src"
         
-        # Find the absolute path to libs
-        LIB_ABS=$(cd ../blender/lib && pwd)
+        mkdir -p "$BUILD_DIR"
+        cd "$BUILD_DIR"
         
-        echo "Configuring with libs at: $LIB_ABS"
+        echo "Configuring CMake..."
+        echo "Source: $SRC_DIR"
+        echo "Libs:   ${{ env.BLENDER_LIBDIR }}"
         
         cmake -G Xcode \
           -DCMAKE_SYSTEM_NAME=iOS \
           -DCMAKE_OSX_ARCHITECTURES=arm64 \
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO \
-          -DLIBDIR="$LIB_ABS" \
-          ../blender
+          -DLIBDIR="${{ env.BLENDER_LIBDIR }}" \
+          "$SRC_DIR"
 
     - name: Build Blender App
-      working-directory: ./build_ios
       run: |
+        cd "${{ github.workspace }}/build_ios"
+        
         xcodebuild -project Blender.xcodeproj \
           -scheme Blender \
           -configuration Release \
@@ -78,7 +101,7 @@ jobs:
 
     - name: Package into IPA
       run: |
-        cd build_ios/Release-iphoneos
+        cd "${{ github.workspace }}/build_ios/Release-iphoneos"
         mkdir Payload
         cp -r Blender.app Payload/
         zip -r Blender_iPad.ipa Payload
@@ -87,4 +110,4 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: Blender-iPad-Build
-        path: build_ios/Release-iphoneos/Blender_iPad.ipa
+        path: ${{ github.workspace }}/build_ios/Release-iphoneos/Blender_iPad.ipa
