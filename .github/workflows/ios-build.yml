@@ -1,65 +1,96 @@
-name: Build Blender for iPad
+name: Build Blender for iPad (Diagnostic Mode)
 
 on:
   workflow_dispatch: # Manual trigger
 
 jobs:
   build:
-    runs-on: macos-14  # Apple Silicon (M1/M2) runner
+    runs-on: macos-14
     
     steps:
     - name: Install System Tools
       run: |
-        brew install cmake git-lfs svn
+        brew install cmake git-lfs svn tree
         git lfs install
 
-    - name: Checkout Code (To 'src' folder)
+    - name: Checkout Code
       run: |
-        # We clone into a folder named 'src' instead of 'blender'
-        # This allows us to create the 'lib' sibling structure cleanly.
-        git clone --branch ios --depth 1 https://projects.blender.org/blender/blender.git src
+        # Clone to a folder named 'blender'
+        git clone --branch ios --depth 1 https://projects.blender.org/blender/blender.git blender
 
-    - name: Download Libraries (Sibling Layout)
-      working-directory: ./src
+    - name: Download Libraries
+      working-directory: ./blender
       run: |
-        # 1. Pull LFS data inside source
         git lfs pull
         
-        # 2. Update standard libraries
-        # Since we are in './src', 'make update' defaults to downloading into '../lib'
-        # This creates the 'lib' folder at the root of the workspace (Sibling to src)
+        # We run the updates. We won't try to move anything yet.
+        # We just want to see where they land by default.
         make update
-        
-        # 3. Download iOS libraries
-        # This will also populate '../lib/ios_arm64'
         python3 build_files/utils/make_update.py --use-ios-libraries
 
-    - name: Verify Sibling Structure
+    - name: Generate File System Report (DEBUG)
+      if: always() # Run this even if previous steps failed
       run: |
-        # DEBUG: Prove that the folders are neighbors
-        echo "Listing Workspace Root:"
-        ls -d *
+        echo "=========================================="
+        echo "      DIAGNOSTIC FILE SYSTEM REPORT       "
+        echo "=========================================="
         
-        echo "Checking for libraries in ../lib (relative to src):"
-        ls lib/ios_arm64/python/bin/python3.11 || exit 1
+        echo "1. Current Directory:"
+        pwd
+        
+        echo "2. Workspace Root Listing:"
+        ls -F
+        
+        echo "3. Blender Folder Listing:"
+        ls -F blender/ || echo "Blender folder not found"
+        
+        echo "4. Search for 'ios_arm64' (The missing folder):"
+        found_path=$(find . -name "ios_arm64" -type d -print)
+        if [ -z "$found_path" ]; then
+          echo "❌ CRITICAL: 'ios_arm64' folder was NOT found anywhere!"
+        else
+          echo "✅ FOUND IT AT: $found_path"
+          echo "CONTENTS:"
+          ls -F "$found_path"
+        fi
 
-    - name: Configure CMake
+        echo "5. Search for 'python' inside libraries:"
+        find . -name "python" -type d -maxdepth 6
+
+        echo "=========================================="
+        echo "            END OF REPORT                 "
+        echo "=========================================="
+
+    - name: Smart Configure CMake
+      id: cmake_config
       run: |
-        # Create a build folder at the ROOT (Sibling to src and lib)
-        mkdir build
-        cd build
+        # Auto-locate the library folder based on the search above
+        LIB_PATH=$(find "$GITHUB_WORKSPACE" -name "ios_arm64" -type d -maxdepth 4 | head -n 1)
         
-        # We run CMake pointing to the sibling 'src' directory (../src)
-        # CMake will automatically look for libraries in ../lib (which is correct now)
+        if [ -z "$LIB_PATH" ]; then
+            echo "::error::Could not find library path automatically."
+            exit 1
+        fi
+        
+        # We found '.../something/ios_arm64'. CMake wants the PARENT of that.
+        # i.e. if path is /a/b/lib/ios_arm64, CMake wants /a/b/lib
+        REAL_LIB_ROOT=$(dirname "$LIB_PATH")
+        
+        echo "Detected Library Root: $REAL_LIB_ROOT"
+        
+        mkdir build_ios
+        cd build_ios
+        
         cmake -G Xcode \
           -DCMAKE_SYSTEM_NAME=iOS \
           -DCMAKE_OSX_ARCHITECTURES=arm64 \
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO \
-          ../src
+          -DLIBDIR="$REAL_LIB_ROOT" \
+          ../blender
 
     - name: Build Blender App
-      working-directory: ./build
+      working-directory: ./build_ios
       run: |
         xcodebuild -project Blender.xcodeproj \
           -scheme Blender \
@@ -69,9 +100,9 @@ jobs:
           CODE_SIGNING_REQUIRED=NO \
           CODE_SIGNING_ALLOWED=NO
 
-    - name: Package into IPA
+    - name: Package and Upload
       run: |
-        cd build/Release-iphoneos
+        cd build_ios/Release-iphoneos
         mkdir Payload
         cp -r Blender.app Payload/
         zip -r Blender_iPad.ipa Payload
@@ -80,4 +111,4 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: Blender-iPad-Build
-        path: build/Release-iphoneos/Blender_iPad.ipa
+        path: build_ios/Release-iphoneos/Blender_iPad.ipa
