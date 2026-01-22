@@ -15,53 +15,57 @@ jobs:
 
     - name: Checkout Code (Official Server)
       run: |
-        # Clone explicitly from Blender's official Gitea server to get correct LFS files
+        # Clone explicitly from Blender's official server
         git clone --branch ios --depth 1 https://projects.blender.org/blender/blender.git blender
 
     - name: Download Libraries
       working-directory: ./blender
       run: |
-        # 1. Pull LFS data (Script files etc)
+        # 1. Pull LFS data
         git lfs pull
         
-        # 2. Download Host Libraries (macOS) - needed for build tools
+        # 2. Update standard libraries (Host: macOS)
         make update
         
-        # 3. Download Target Libraries (iOS)
-        # This script downloads the heavy iOS libs (Python, Alembic, etc)
+        # 3. Download iOS libraries
         python3 build_files/utils/make_update.py --use-ios-libraries
 
-    - name: Fix Library Path
+    - name: Organize Libraries
       run: |
+        # DEBUG: List what we have before moving
+        ls -d lib || echo "Root lib not found"
+        ls -d blender/lib || echo "Blender lib not found"
+        
         # CRITICAL FIX:
-        # 'make update' puts libs in a sibling folder (../lib).
-        # CMake is looking INSIDE the source folder (blender/lib).
-        # We move them so CMake finds them.
+        # The 'blender/lib' folder exists from git (but it is wrong/empty).
+        # We must DELETE it first, then move the real 'lib' folder into 'blender/'
         
-        echo "Moving libraries to expected location..."
-        mv lib blender/lib
+        echo "Removing placeholder lib folder..."
+        rm -rf blender/lib
         
-        # Verify the iOS python lib exists (Debug check)
-        ls -R blender/lib/ios_arm64/python || echo "WARNING: iOS Python libs missing!"
+        echo "Moving downloaded libraries to blender/lib..."
+        mv lib blender/
+        
+        # Verify structure
+        ls -R blender/lib/ios_arm64/python || echo "WARNING: Python libs still missing!"
 
     - name: Configure CMake
       run: |
         mkdir build_ios
         cd build_ios
         
-        # We pass the explicit path to the internal lib folder we just moved
+        # We point CMake to the libraries we just moved into place
         cmake -G Xcode \
           -DCMAKE_SYSTEM_NAME=iOS \
           -DCMAKE_OSX_ARCHITECTURES=arm64 \
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO \
-          -DLIBDIR=../blender/lib \
           ../blender
 
     - name: Build Blender App
       working-directory: ./build_ios
       run: |
-        # Build only the Release configuration
+        # Build Release version
         xcodebuild -project Blender.xcodeproj \
           -scheme Blender \
           -configuration Release \
