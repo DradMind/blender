@@ -1,18 +1,18 @@
 name: Build Blender for iPad
 
 on:
-  workflow_dispatch: # Manual trigger button
+  workflow_dispatch: # Manual trigger
 
 jobs:
   build:
-    runs-on: macos-14  # Uses M1/M2 (Apple Silicon). Critical for this build.
+    runs-on: macos-14  # Apple Silicon (M1) runner
     
     steps:
     - name: Checkout Code
       uses: actions/checkout@v4
       with:
         repository: blender/blender
-        ref: ios  # Targets the 'ios' branch. 
+        ref: ios  # Target the experimental iOS branch
         path: blender
 
     - name: Install System Tools
@@ -20,28 +20,23 @@ jobs:
         brew install cmake git-lfs svn
         git lfs install
 
-    - name: Download Libraries (Manual Fix)
-      # This step fixes your specific "Missing Libs" error by forcing the download
-      # to the exact location CMake expects.
+    - name: Download Libraries (Script Method)
+      working-directory: ./blender
       run: |
-        # Ensure we are at the root of the workspace
-        # We need a folder structure where 'lib' is a sibling of 'blender'
+        # 1. Download the standard macOS host libraries (required for build tools)
+        # We use the python script directly to avoid full 'make update' overhead
+        python3 build_files/utils/make_update.py --command update
         
-        mkdir -p lib
-        
-        echo "Downloading iOS Libraries (This may take 5-10 minutes)..."
-        svn checkout https://svn.blender.org/svnroot/bf-blender/trunk/lib/ios_arm64 lib/ios_arm64 --quiet
-        
-        echo "Downloading macOS Libraries (Needed for host tools)..."
-        svn checkout https://svn.blender.org/svnroot/bf-blender/trunk/lib/macos_arm64 lib/macos_arm64 --quiet
+        # 2. Download the iOS-specific libraries
+        # This is the official command from the iOS branch documentation
+        python3 build_files/utils/make_update.py --use-ios-libraries
 
     - name: Configure CMake
       run: |
         mkdir build_ios
         cd build_ios
         
-        # We point CMake to the source code (../blender).
-        # It will automatically find the libs we downloaded in ../lib
+        # Configure the project for iOS ARM64
         cmake -G Xcode \
           -DCMAKE_SYSTEM_NAME=iOS \
           -DCMAKE_OSX_ARCHITECTURES=arm64 \
@@ -52,7 +47,7 @@ jobs:
     - name: Build Blender App
       working-directory: ./build_ios
       run: |
-        # Use xcodebuild to compile the project
+        # Compile the app
         xcodebuild -project Blender.xcodeproj \
           -scheme Blender \
           -configuration Release \
@@ -63,7 +58,7 @@ jobs:
 
     - name: Package into IPA
       run: |
-        # Create the Payload structure required for an IPA file
+        # Create the .ipa structure
         cd build_ios/Release-iphoneos
         mkdir Payload
         cp -r Blender.app Payload/
