@@ -1,15 +1,16 @@
-name: Build Blender for iPad (Move Fix)
+name: Build Blender for iPad (Final Fix)
 
 on:
   workflow_dispatch: # Manual trigger
 
 jobs:
   build:
-    runs-on: macos-15 # Xcode 16+
+    runs-on: macos-15 # Use Xcode 16+ environment
     
     steps:
     - name: Select Latest Xcode
       run: |
+        # Force Xcode 16 (Required for iPadOS 26 / iOS 18 SDKs)
         sudo xcode-select -s /Applications/Xcode_16.0.app/Contents/Developer || sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
         xcodebuild -version
 
@@ -23,67 +24,69 @@ jobs:
         # Clone into 'blender_src'
         git clone --branch ios --depth 1 https://projects.blender.org/blender/blender.git blender_src
 
-    - name: Download Libraries
+    - name: Download Libraries (SVN)
       working-directory: ${{ github.workspace }}/blender_src
       run: |
-        # This downloads files to the SIBLING folder (../lib)
-        echo "Running make update..."
+        # We use the python script which triggers SVN.
+        # This prevents the "Empty File" errors from Git LFS.
+        echo "Downloading libraries..."
         make update
         python3 build_files/utils/make_update.py --use-ios-libraries
 
-    - name: Move Libraries (The Fix)
-      working-directory: ${{ github.workspace }}
+    - name: Search and Fix Libraries
+      id: fix_libs
       run: |
         echo "=========================================="
-        echo "   MOVING LIBRARIES TO CORRECT PLACE      "
+        echo "   SEARCHING FOR LIBRARIES...             "
         echo "=========================================="
         
-        # 1. Define paths
-        SIBLING_LIB="lib"                     # The folder created by make update
-        TARGET_LIB="blender_src/lib"          # The folder CMake wants
+        # 1. Find the 'ios_arm64' folder anywhere in the workspace
+        #    (Ignores hidden .git folders)
+        IOS_LIB_PATH=$(find "${{ github.workspace }}" -path "*/ios_arm64/python" -type d -print -quit | sed 's|/python||')
         
-        # 2. Check if sibling lib exists (It should!)
-        if [ -d "$SIBLING_LIB" ]; then
-            echo "✅ Found sibling libraries at: $SIBLING_LIB"
-            
-            # 3. Create target directory
-            mkdir -p "$TARGET_LIB"
-            
-            # 4. Move contents
-            echo "Moving sibling contents into $TARGET_LIB..."
-            mv "$SIBLING_LIB"/* "$TARGET_LIB"/
-            
-            # 5. Verify Move
-            if [ -d "$TARGET_LIB/ios_arm64" ]; then
-                echo "✅ Success: ios_arm64 is now inside blender_src/lib"
-            else
-                echo "❌ Error: Move failed."
-                exit 1
-            fi
-        else
-            echo "❌ CRITICAL: Sibling library folder not found! Download failed."
-            ls -F
-            exit 1
+        if [ -z "$IOS_LIB_PATH" ]; then
+          echo "❌ ERROR: Could not find 'ios_arm64' folder!"
+          find "${{ github.workspace }}" -maxdepth 4 -name "*lib*"
+          exit 1
         fi
+        
+        echo "✅ Found ios_arm64 at: $IOS_LIB_PATH"
+        
+        # 2. Determine the Root Library Directory
+        #    If path is /.../lib/ios_arm64, root is /.../lib
+        LIB_ROOT=$(dirname "$IOS_LIB_PATH")
+        echo "✅ Library Root is: $LIB_ROOT"
+        
+        # 3. Create the Symlink (CRITICAL FIX)
+        #    CMake wants 'arm64', we have 'ios_arm64'. We link them.
+        cd "$LIB_ROOT"
+        if [ ! -d "arm64" ]; then
+            echo "🔗 Creating symlink: arm64 -> ios_arm64"
+            ln -s ios_arm64 arm64
+        else
+            echo "Symlink 'arm64' already exists."
+        fi
+        
+        # 4. Save path for next step
+        echo "BLENDER_LIBDIR=$LIB_ROOT" >> $GITHUB_ENV
 
     - name: Configure CMake
       run: |
         BUILD_DIR="${{ github.workspace }}/build_ios"
         SRC_DIR="${{ github.workspace }}/blender_src"
-        LIB_DIR="${{ github.workspace }}/blender_src/lib"
         
         mkdir -p "$BUILD_DIR"
         cd "$BUILD_DIR"
         
         echo "Configuring CMake..."
-        echo "Libs expected at: $LIB_DIR"
+        echo "Using Libs at: ${{ env.BLENDER_LIBDIR }}"
         
         cmake -G Xcode \
           -DCMAKE_SYSTEM_NAME=iOS \
           -DCMAKE_OSX_ARCHITECTURES=arm64 \
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO \
-          -DLIBDIR="$LIB_DIR" \
+          -DLIBDIR="${{ env.BLENDER_LIBDIR }}" \
           "$SRC_DIR"
 
     - name: Build Blender App
