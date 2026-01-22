@@ -1,89 +1,81 @@
-name: Build Blender for iPad
+name: Build Blender for iPad (Latest Xcode)
 
 on:
   workflow_dispatch: # Manual trigger
 
 jobs:
   build:
-    runs-on: macos-14
+    # UPDATED: We use macos-15 to get access to Xcode 16+
+    runs-on: macos-15
     
     steps:
+    - name: Select Latest Xcode
+      run: |
+        # Force the runner to use the newest Xcode available
+        # This is critical for iPadOS 26 / iOS 18+ compatibility
+        sudo xcode-select -s /Applications/Xcode_16.0.app/Contents/Developer || sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+        xcodebuild -version
+
     - name: Install System Tools
       run: |
         brew install cmake git-lfs svn
         git lfs install
 
-    - name: Checkout Code (Official Server)
+    - name: Checkout Code
       run: |
-        # Clone to 'blender' folder
         git clone --branch ios --depth 1 https://projects.blender.org/blender/blender.git blender
 
     - name: Download Libraries
       working-directory: ./blender
       run: |
         git lfs pull
-        
-        # Download libraries. 
-        # Based on your report, these are landing INSIDE 'blender/lib'
         make update
         python3 build_files/utils/make_update.py --use-ios-libraries
 
-    - name: Smart Library Locator
-      id: locate_libs
+    - name: Locate Libraries & Configure
+      id: build_prep
       working-directory: ./blender
       run: |
-        echo "Searching for valid library path..."
-        
-        # 1. Find the path to the 'python' folder inside ios_arm64.
-        #    This is a specific check that avoids the confusing .git folders.
+        # Find the python folder to locate the real root
         PYTHON_PATH=$(find . -path "*/ios_arm64/python" -type d -print -quit)
         
         if [ -z "$PYTHON_PATH" ]; then
-          echo "❌ ERROR: Could not find iOS Python libraries!"
+          echo "❌ ERROR: Libraries failed to download."
           exit 1
         fi
         
-        # 2. Convert to Absolute Path
-        ABS_PYTHON_PATH=$(cd "$PYTHON_PATH" && pwd)
-        echo "✅ Found Python at: $ABS_PYTHON_PATH"
+        # Calculate root: python -> ios_arm64 -> lib
+        LIB_ROOT=$(dirname $(dirname "$PYTHON_PATH"))
+        ABS_LIB_ROOT=$(cd "$LIB_ROOT" && pwd)
         
-        # 3. Walk up the tree to find the 'lib' root.
-        #    Path is: .../lib/ios_arm64/python
-        #    So we need to go up 2 levels: python -> ios_arm64 -> lib
+        echo "✅ FOUND LIBS AT: $ABS_LIB_ROOT"
         
-        IOS_ARM64_DIR=$(dirname "$ABS_PYTHON_PATH")
-        LIB_ROOT=$(dirname "$IOS_ARM64_DIR")
+        # Create Build Directory
+        mkdir ../build_ios
+        cd ../build_ios
         
-        echo "✅ Detected Library Root: $LIB_ROOT"
-        
-        # 4. Save to GitHub Environment variable for the next step
-        echo "BLENDER_LIBDIR=$LIB_ROOT" >> $GITHUB_ENV
-
-    - name: Configure CMake
-      run: |
-        mkdir build_ios
-        cd build_ios
-        
-        echo "Configuring CMake with LIBDIR: ${{ env.BLENDER_LIBDIR }}"
+        echo "Configuring CMake..."
         
         cmake -G Xcode \
           -DCMAKE_SYSTEM_NAME=iOS \
           -DCMAKE_OSX_ARCHITECTURES=arm64 \
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO \
-          -DLIBDIR="${{ env.BLENDER_LIBDIR }}" \
+          -DLIBDIR="$ABS_LIB_ROOT" \
           ../blender
 
     - name: Build Blender App
       working-directory: ./build_ios
       run: |
+        # We allow the build to retry once if it fails on a specific file lock
         xcodebuild -project Blender.xcodeproj \
           -scheme Blender \
           -configuration Release \
           -destination 'generic/platform=iOS' \
           CODE_SIGN_IDENTITY="" \
           CODE_SIGNING_REQUIRED=NO \
-          CODE_SIGNING_ALLOWED=NO
+          CODE_SIGNING_ALLOWED=NO \
+          -allowProvisioningUpdates
 
     - name: Package into IPA
       run: |
