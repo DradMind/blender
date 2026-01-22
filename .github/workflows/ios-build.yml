@@ -28,38 +28,46 @@ jobs:
         make update
         
         # 3. Download iOS libraries
+        # We run this exactly as the developers do
         python3 build_files/utils/make_update.py --use-ios-libraries
 
-    - name: Organize Libraries
+    - name: Locate Libraries (Auto-Discovery)
+      id: find_libs
       run: |
-        # DEBUG: List what we have before moving
-        ls -d lib || echo "Root lib not found"
-        ls -d blender/lib || echo "Blender lib not found"
+        # Search for the 'ios_arm64' folder anywhere in the workspace
+        # This prevents "No such file" errors by finding exactly where they are.
         
-        # CRITICAL FIX:
-        # The 'blender/lib' folder exists from git (but it is wrong/empty).
-        # We must DELETE it first, then move the real 'lib' folder into 'blender/'
+        LIB_PATH=$(find . -type d -name "ios_arm64" -print -quit)
         
-        echo "Removing placeholder lib folder..."
-        rm -rf blender/lib
+        if [ -z "$LIB_PATH" ]; then
+          echo "ERROR: ios_arm64 libraries not found! Download failed."
+          exit 1
+        fi
         
-        echo "Moving downloaded libraries to blender/lib..."
-        mv lib blender/
+        # Get the parent directory (which is the 'lib' root CMake wants)
+        # If path is ./blender/lib/ios_arm64, we want ./blender/lib
+        REAL_LIB_ROOT=$(dirname "$LIB_PATH")
         
-        # Verify structure
-        ls -R blender/lib/ios_arm64/python || echo "WARNING: Python libs still missing!"
+        # Convert to absolute path
+        ABS_LIB_ROOT=$(cd "$REAL_LIB_ROOT" && pwd)
+        
+        echo "Found libraries at: $ABS_LIB_ROOT"
+        echo "LIBDIR=$ABS_LIB_ROOT" >> $GITHUB_ENV
 
     - name: Configure CMake
       run: |
         mkdir build_ios
         cd build_ios
         
-        # We point CMake to the libraries we just moved into place
+        echo "Telling CMake to use libs at: ${{ env.LIBDIR }}"
+        
+        # We use the discovered path in -DLIBDIR
         cmake -G Xcode \
           -DCMAKE_SYSTEM_NAME=iOS \
           -DCMAKE_OSX_ARCHITECTURES=arm64 \
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO \
+          -DLIBDIR="${{ env.LIBDIR }}" \
           ../blender
 
     - name: Build Blender App
