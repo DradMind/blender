@@ -1,18 +1,15 @@
-name: Build Blender for iPad (Latest Xcode)
+name: Build Blender for iPad (Symlink Fix)
 
 on:
   workflow_dispatch: # Manual trigger
 
 jobs:
   build:
-    # UPDATED: We use macos-15 to get access to Xcode 16+
-    runs-on: macos-15
+    runs-on: macos-15  # Using Xcode 16+
     
     steps:
     - name: Select Latest Xcode
       run: |
-        # Force the runner to use the newest Xcode available
-        # This is critical for iPadOS 26 / iOS 18+ compatibility
         sudo xcode-select -s /Applications/Xcode_16.0.app/Contents/Developer || sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
         xcodebuild -version
 
@@ -32,42 +29,70 @@ jobs:
         make update
         python3 build_files/utils/make_update.py --use-ios-libraries
 
-    - name: Locate Libraries & Configure
-      id: build_prep
+    - name: Fix Library Names (Symlinks)
+      id: fix_libs
       working-directory: ./blender
       run: |
-        # Find the python folder to locate the real root
+        # 1. Locate the real library folder
         PYTHON_PATH=$(find . -path "*/ios_arm64/python" -type d -print -quit)
-        
         if [ -z "$PYTHON_PATH" ]; then
-          echo "❌ ERROR: Libraries failed to download."
+          echo "❌ ERROR: Download failed completely."
           exit 1
         fi
         
-        # Calculate root: python -> ios_arm64 -> lib
+        # Calculate the root 'lib' folder
+        # Path: .../lib/ios_arm64/python
         LIB_ROOT=$(dirname $(dirname "$PYTHON_PATH"))
         ABS_LIB_ROOT=$(cd "$LIB_ROOT" && pwd)
         
         echo "✅ FOUND LIBS AT: $ABS_LIB_ROOT"
         
-        # Create Build Directory
+        # 2. CREATE SYMLINKS (The Fix)
+        # We create aliases so 'arm64' and 'ios' all point to 'ios_arm64'
+        cd "$ABS_LIB_ROOT"
+        
+        if [ ! -d "arm64" ]; then
+            echo "Creating 'arm64' shortcut..."
+            ln -s ios_arm64 arm64
+        fi
+        
+        if [ ! -d "ios" ]; then
+             echo "Creating 'ios' shortcut..."
+             ln -s ios_arm64 ios
+        fi
+        
+        # 3. LFS SANITY CHECK
+        # Check if libraries are real files or just tiny pointers (less than 1KB)
+        echo "Checking file sizes..."
+        SMALL_FILES=$(find ios_arm64 -name "lib*.a" -size -1k | head -n 5)
+        if [ ! -z "$SMALL_FILES" ]; then
+           echo "❌ CRITICAL ERROR: Git LFS failed! These files are empty pointers:"
+           echo "$SMALL_FILES"
+           echo "You need to fix Git LFS quotas or authentication."
+           exit 1
+        fi
+        
+        # Pass the path to the next step
+        echo "BLENDER_LIBDIR=$ABS_LIB_ROOT" >> $GITHUB_ENV
+
+    - name: Configure CMake
+      run: |
         mkdir ../build_ios
         cd ../build_ios
         
-        echo "Configuring CMake..."
+        echo "Configuring CMake with Fixed Libs..."
         
         cmake -G Xcode \
           -DCMAKE_SYSTEM_NAME=iOS \
           -DCMAKE_OSX_ARCHITECTURES=arm64 \
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO \
-          -DLIBDIR="$ABS_LIB_ROOT" \
+          -DLIBDIR="${{ env.BLENDER_LIBDIR }}" \
           ../blender
 
     - name: Build Blender App
       working-directory: ./build_ios
       run: |
-        # We allow the build to retry once if it fails on a specific file lock
         xcodebuild -project Blender.xcodeproj \
           -scheme Blender \
           -configuration Release \
