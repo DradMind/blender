@@ -1,4 +1,4 @@
-name: Build Blender for iPad (SVN + Absolute Paths)
+name: Build Blender for iPad (Move Fix)
 
 on:
   workflow_dispatch: # Manual trigger
@@ -23,35 +23,47 @@ jobs:
         # Clone into 'blender_src'
         git clone --branch ios --depth 1 https://projects.blender.org/blender/blender.git blender_src
 
-    - name: Download Libraries (The Official Way)
+    - name: Download Libraries
       working-directory: ${{ github.workspace }}/blender_src
       run: |
-        # We use the official python scripts which trigger SVN downloads.
-        # This is the ONLY way to get the real binaries (not LFS).
-        
-        echo "Downloading Host Libs (macOS)..."
+        # This downloads files to the SIBLING folder (../lib)
+        echo "Running make update..."
         make update
-        
-        echo "Downloading Target Libs (iOS)..."
         python3 build_files/utils/make_update.py --use-ios-libraries
 
-    - name: Fix Library Paths (Symlinks)
-      working-directory: ${{ github.workspace }}/blender_src/lib
+    - name: Move Libraries (The Fix)
+      working-directory: ${{ github.workspace }}
       run: |
-        echo "Verifying download..."
-        # Check if python exists (proof of download)
-        if [ ! -d "ios_arm64/python" ]; then
-           echo "❌ ERROR: SVN Download failed. Folder is empty."
-           exit 1
-        fi
+        echo "=========================================="
+        echo "   MOVING LIBRARIES TO CORRECT PLACE      "
+        echo "=========================================="
         
-        echo "✅ Download successful."
+        # 1. Define paths
+        SIBLING_LIB="lib"                     # The folder created by make update
+        TARGET_LIB="blender_src/lib"          # The folder CMake wants
         
-        # Create Symlinks to ensure CMake finds the folder regardless of naming convention
-        # We link 'arm64' -> 'ios_arm64'
-        if [ -d "ios_arm64" ] && [ ! -d "arm64" ]; then
-            echo "Linking arm64 -> ios_arm64"
-            ln -s ios_arm64 arm64
+        # 2. Check if sibling lib exists (It should!)
+        if [ -d "$SIBLING_LIB" ]; then
+            echo "✅ Found sibling libraries at: $SIBLING_LIB"
+            
+            # 3. Create target directory
+            mkdir -p "$TARGET_LIB"
+            
+            # 4. Move contents
+            echo "Moving sibling contents into $TARGET_LIB..."
+            mv "$SIBLING_LIB"/* "$TARGET_LIB"/
+            
+            # 5. Verify Move
+            if [ -d "$TARGET_LIB/ios_arm64" ]; then
+                echo "✅ Success: ios_arm64 is now inside blender_src/lib"
+            else
+                echo "❌ Error: Move failed."
+                exit 1
+            fi
+        else
+            echo "❌ CRITICAL: Sibling library folder not found! Download failed."
+            ls -F
+            exit 1
         fi
 
     - name: Configure CMake
@@ -64,9 +76,8 @@ jobs:
         cd "$BUILD_DIR"
         
         echo "Configuring CMake..."
-        echo "Libs at: $LIB_DIR"
+        echo "Libs expected at: $LIB_DIR"
         
-        # We explicitly pass LIBDIR so CMake looks in the right spot
         cmake -G Xcode \
           -DCMAKE_SYSTEM_NAME=iOS \
           -DCMAKE_OSX_ARCHITECTURES=arm64 \
