@@ -1,4 +1,4 @@
-name: Build Blender for iPad (Diagnostic Mode)
+name: Build Blender for iPad
 
 on:
   workflow_dispatch: # Manual trigger
@@ -10,12 +10,12 @@ jobs:
     steps:
     - name: Install System Tools
       run: |
-        brew install cmake git-lfs svn tree
+        brew install cmake git-lfs svn
         git lfs install
 
-    - name: Checkout Code
+    - name: Checkout Code (Official Server)
       run: |
-        # Clone to a folder named 'blender'
+        # Clone to 'blender' folder
         git clone --branch ios --depth 1 https://projects.blender.org/blender/blender.git blender
 
     - name: Download Libraries
@@ -23,70 +23,55 @@ jobs:
       run: |
         git lfs pull
         
-        # We run the updates. We won't try to move anything yet.
-        # We just want to see where they land by default.
+        # Download libraries. 
+        # Based on your report, these are landing INSIDE 'blender/lib'
         make update
         python3 build_files/utils/make_update.py --use-ios-libraries
 
-    - name: Generate File System Report (DEBUG)
-      if: always() # Run this even if previous steps failed
+    - name: Smart Library Locator
+      id: locate_libs
+      working-directory: ./blender
       run: |
-        echo "=========================================="
-        echo "      DIAGNOSTIC FILE SYSTEM REPORT       "
-        echo "=========================================="
+        echo "Searching for valid library path..."
         
-        echo "1. Current Directory:"
-        pwd
+        # 1. Find the path to the 'python' folder inside ios_arm64.
+        #    This is a specific check that avoids the confusing .git folders.
+        PYTHON_PATH=$(find . -path "*/ios_arm64/python" -type d -print -quit)
         
-        echo "2. Workspace Root Listing:"
-        ls -F
-        
-        echo "3. Blender Folder Listing:"
-        ls -F blender/ || echo "Blender folder not found"
-        
-        echo "4. Search for 'ios_arm64' (The missing folder):"
-        found_path=$(find . -name "ios_arm64" -type d -print)
-        if [ -z "$found_path" ]; then
-          echo "❌ CRITICAL: 'ios_arm64' folder was NOT found anywhere!"
-        else
-          echo "✅ FOUND IT AT: $found_path"
-          echo "CONTENTS:"
-          ls -F "$found_path"
-        fi
-
-        echo "5. Search for 'python' inside libraries:"
-        find . -name "python" -type d -maxdepth 6
-
-        echo "=========================================="
-        echo "            END OF REPORT                 "
-        echo "=========================================="
-
-    - name: Smart Configure CMake
-      id: cmake_config
-      run: |
-        # Auto-locate the library folder based on the search above
-        LIB_PATH=$(find "$GITHUB_WORKSPACE" -name "ios_arm64" -type d -maxdepth 4 | head -n 1)
-        
-        if [ -z "$LIB_PATH" ]; then
-            echo "::error::Could not find library path automatically."
-            exit 1
+        if [ -z "$PYTHON_PATH" ]; then
+          echo "❌ ERROR: Could not find iOS Python libraries!"
+          exit 1
         fi
         
-        # We found '.../something/ios_arm64'. CMake wants the PARENT of that.
-        # i.e. if path is /a/b/lib/ios_arm64, CMake wants /a/b/lib
-        REAL_LIB_ROOT=$(dirname "$LIB_PATH")
+        # 2. Convert to Absolute Path
+        ABS_PYTHON_PATH=$(cd "$PYTHON_PATH" && pwd)
+        echo "✅ Found Python at: $ABS_PYTHON_PATH"
         
-        echo "Detected Library Root: $REAL_LIB_ROOT"
+        # 3. Walk up the tree to find the 'lib' root.
+        #    Path is: .../lib/ios_arm64/python
+        #    So we need to go up 2 levels: python -> ios_arm64 -> lib
         
+        IOS_ARM64_DIR=$(dirname "$ABS_PYTHON_PATH")
+        LIB_ROOT=$(dirname "$IOS_ARM64_DIR")
+        
+        echo "✅ Detected Library Root: $LIB_ROOT"
+        
+        # 4. Save to GitHub Environment variable for the next step
+        echo "BLENDER_LIBDIR=$LIB_ROOT" >> $GITHUB_ENV
+
+    - name: Configure CMake
+      run: |
         mkdir build_ios
         cd build_ios
+        
+        echo "Configuring CMake with LIBDIR: ${{ env.BLENDER_LIBDIR }}"
         
         cmake -G Xcode \
           -DCMAKE_SYSTEM_NAME=iOS \
           -DCMAKE_OSX_ARCHITECTURES=arm64 \
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO \
-          -DLIBDIR="$REAL_LIB_ROOT" \
+          -DLIBDIR="${{ env.BLENDER_LIBDIR }}" \
           ../blender
 
     - name: Build Blender App
@@ -100,7 +85,7 @@ jobs:
           CODE_SIGNING_REQUIRED=NO \
           CODE_SIGNING_ALLOWED=NO
 
-    - name: Package and Upload
+    - name: Package into IPA
       run: |
         cd build_ios/Release-iphoneos
         mkdir Payload
