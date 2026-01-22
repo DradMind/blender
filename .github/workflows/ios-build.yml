@@ -13,41 +13,55 @@ jobs:
         brew install cmake git-lfs svn
         git lfs install
 
-    - name: Checkout Code (From Official Server)
+    - name: Checkout Code (Official Server)
       run: |
-        # We clone MANUALLY from Blender's official server (Gitea)
-        # The GitHub mirror (blender/blender) is missing LFS files for this branch.
+        # Clone explicitly from Blender's official Gitea server to get correct LFS files
         git clone --branch ios --depth 1 https://projects.blender.org/blender/blender.git blender
 
     - name: Download Libraries
       working-directory: ./blender
       run: |
-        # 1. Ensure Git LFS files are pulled from the OFFICIAL server
+        # 1. Pull LFS data (Script files etc)
         git lfs pull
         
-        # 2. Update standard libraries (Host: macOS ARM64)
+        # 2. Download Host Libraries (macOS) - needed for build tools
         make update
         
-        # 3. Download iOS-specific libraries
+        # 3. Download Target Libraries (iOS)
+        # This script downloads the heavy iOS libs (Python, Alembic, etc)
         python3 build_files/utils/make_update.py --use-ios-libraries
+
+    - name: Fix Library Path
+      run: |
+        # CRITICAL FIX:
+        # 'make update' puts libs in a sibling folder (../lib).
+        # CMake is looking INSIDE the source folder (blender/lib).
+        # We move them so CMake finds them.
+        
+        echo "Moving libraries to expected location..."
+        mv lib blender/lib
+        
+        # Verify the iOS python lib exists (Debug check)
+        ls -R blender/lib/ios_arm64/python || echo "WARNING: iOS Python libs missing!"
 
     - name: Configure CMake
       run: |
         mkdir build_ios
         cd build_ios
         
-        # Configure the project for iOS ARM64
+        # We pass the explicit path to the internal lib folder we just moved
         cmake -G Xcode \
           -DCMAKE_SYSTEM_NAME=iOS \
           -DCMAKE_OSX_ARCHITECTURES=arm64 \
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO \
+          -DLIBDIR=../blender/lib \
           ../blender
 
     - name: Build Blender App
       working-directory: ./build_ios
       run: |
-        # Compile the app
+        # Build only the Release configuration
         xcodebuild -project Blender.xcodeproj \
           -scheme Blender \
           -configuration Release \
@@ -58,7 +72,6 @@ jobs:
 
     - name: Package into IPA
       run: |
-        # Create the .ipa structure
         cd build_ios/Release-iphoneos
         mkdir Payload
         cp -r Blender.app Payload/
