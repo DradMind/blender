@@ -1,4 +1,4 @@
-name: Build Blender for iPad (Absolute Paths)
+name: Build Blender for iPad (SVN + Absolute Paths)
 
 on:
   workflow_dispatch: # Manual trigger
@@ -20,70 +20,59 @@ jobs:
 
     - name: Checkout Code
       run: |
-        # Clone explicitly into 'blender_src' folder to avoid naming confusion
-        # Path will be: ${{ github.workspace }}/blender_src
+        # Clone into 'blender_src'
         git clone --branch ios --depth 1 https://projects.blender.org/blender/blender.git blender_src
 
-    - name: Force LFS Download
+    - name: Download Libraries (The Official Way)
       working-directory: ${{ github.workspace }}/blender_src
       run: |
-        echo "Initializing LFS..."
-        git lfs install --local
+        # We use the official python scripts which trigger SVN downloads.
+        # This is the ONLY way to get the real binaries (not LFS).
         
-        echo "Fetching LFS objects..."
-        git lfs fetch origin --all
-        git lfs checkout
+        echo "Downloading Host Libs (macOS)..."
+        make update
         
-        # Verify LFS by checking a known heavy file (libmath.a)
-        # We use 'ls -lh' to print the size in the logs for debugging
-        echo "Verifying file size of libmath.a:"
-        ls -lh lib/ios_arm64/embree/lib/libmath.a || echo "File not found"
+        echo "Downloading Target Libs (iOS)..."
+        python3 build_files/utils/make_update.py --use-ios-libraries
 
-    - name: Verify & Locate Libraries (Diagnostic)
-      id: locate
+    - name: Fix Library Paths (Symlinks)
+      working-directory: ${{ github.workspace }}/blender_src/lib
       run: |
-        echo "========================================"
-        echo "   ABSOLUTE PATH DIAGNOSTIC REPORT      "
-        echo "========================================"
-        
-        # Define the exact expected path
-        EXPECTED_LIB="${{ github.workspace }}/blender_src/lib"
-        
-        echo "Looking for libraries at: $EXPECTED_LIB"
-        
-        if [ -d "$EXPECTED_LIB" ]; then
-            echo "✅ SUCCESS: Library folder exists."
-            echo "Contents of lib/ios_arm64:"
-            ls "$EXPECTED_LIB/ios_arm64" | head -n 5
-        else
-            echo "❌ CRITICAL FAILURE: Library folder missing at $EXPECTED_LIB"
-            echo "Listing Workspace Root to see what went wrong:"
-            ls -F "${{ github.workspace }}"
-            exit 1
+        echo "Verifying download..."
+        # Check if python exists (proof of download)
+        if [ ! -d "ios_arm64/python" ]; then
+           echo "❌ ERROR: SVN Download failed. Folder is empty."
+           exit 1
         fi
         
-        # Save absolute path to env
-        echo "BLENDER_LIBDIR=$EXPECTED_LIB" >> $GITHUB_ENV
+        echo "✅ Download successful."
+        
+        # Create Symlinks to ensure CMake finds the folder regardless of naming convention
+        # We link 'arm64' -> 'ios_arm64'
+        if [ -d "ios_arm64" ] && [ ! -d "arm64" ]; then
+            echo "Linking arm64 -> ios_arm64"
+            ln -s ios_arm64 arm64
+        fi
 
     - name: Configure CMake
       run: |
-        # Create build folder using ABSOLUTE path
         BUILD_DIR="${{ github.workspace }}/build_ios"
         SRC_DIR="${{ github.workspace }}/blender_src"
+        LIB_DIR="${{ github.workspace }}/blender_src/lib"
         
         mkdir -p "$BUILD_DIR"
         cd "$BUILD_DIR"
         
         echo "Configuring CMake..."
-        echo "Source: $SRC_DIR"
-        echo "Libs:   ${{ env.BLENDER_LIBDIR }}"
+        echo "Libs at: $LIB_DIR"
         
+        # We explicitly pass LIBDIR so CMake looks in the right spot
         cmake -G Xcode \
           -DCMAKE_SYSTEM_NAME=iOS \
           -DCMAKE_OSX_ARCHITECTURES=arm64 \
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO \
-          -DLIBDIR="${{ env.BLENDER_LIBDIR }}" \
+          -DLIBDIR="$LIB_DIR" \
           "$SRC_DIR"
 
     - name: Build Blender App
