@@ -5,12 +5,13 @@ on:
 
 jobs:
   build:
-    runs-on: macos-15 # Use Xcode 16+ environment
+    runs-on: macos-15 # Uses Xcode 16 (iOS 18 SDK) - Compatible with iPadOS 26
     
     steps:
     - name: Select Latest Xcode
       run: |
-        # Force Xcode 16 (Required for iPadOS 26 / iOS 18 SDKs)
+        # We use Xcode 16. This provides the iOS 18 SDK.
+        # Your iPadOS 26 device will run this app via backward compatibility.
         sudo xcode-select -s /Applications/Xcode_16.0.app/Contents/Developer || sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
         xcodebuild -version
 
@@ -21,73 +22,80 @@ jobs:
 
     - name: Checkout Code
       run: |
-        # Clone into 'blender_src'
         git clone --branch ios --depth 1 https://projects.blender.org/blender/blender.git blender_src
 
-    - name: Download Libraries (SVN)
+    - name: Download Libraries (Host & Target)
       working-directory: ${{ github.workspace }}/blender_src
       run: |
-        # We use the python script which triggers SVN.
-        # This prevents the "Empty File" errors from Git LFS.
-        echo "Downloading libraries..."
-        make update
+        # 1. Download iOS Libs (For the iPad)
+        echo ">>> Downloading iOS Target Libs..."
         python3 build_files/utils/make_update.py --use-ios-libraries
+        
+        # 2. Download macOS Libs (For the Builder) - THIS WAS MISSING
+        # The build needs these to compile tools (makesdna) that run DURING the build.
+        echo ">>> Downloading macOS Host Libs..."
+        python3 build_files/utils/make_update.py --command update
 
-    - name: Search and Fix Libraries
+    - name: Fix Library Structure
       id: fix_libs
       run: |
         echo "=========================================="
-        echo "   SEARCHING FOR LIBRARIES...             "
+        echo "   FIXING LIBRARY STRUCTURE               "
         echo "=========================================="
         
-        # 1. Find the 'ios_arm64' folder anywhere in the workspace
-        #    (Ignores hidden .git folders)
-        IOS_LIB_PATH=$(find "${{ github.workspace }}" -path "*/ios_arm64/python" -type d -print -quit | sed 's|/python||')
+        # Find the 'lib' folder created by the download scripts
+        # It usually lands in the root or next to blender_src
+        FOUND_LIB=$(find "${{ github.workspace }}" -maxdepth 3 -type d -path "*/lib/ios_arm64" | sed 's|/ios_arm64||' | head -n 1)
         
-        if [ -z "$IOS_LIB_PATH" ]; then
-          echo "❌ ERROR: Could not find 'ios_arm64' folder!"
-          find "${{ github.workspace }}" -maxdepth 4 -name "*lib*"
-          exit 1
+        if [ -z "$FOUND_LIB" ]; then
+           echo "❌ ERROR: Libraries failed to download!"
+           exit 1
         fi
         
-        echo "✅ Found ios_arm64 at: $IOS_LIB_PATH"
+        echo "✅ Found libraries at: $FOUND_LIB"
         
-        # 2. Determine the Root Library Directory
-        #    If path is /.../lib/ios_arm64, root is /.../lib
-        LIB_ROOT=$(dirname "$IOS_LIB_PATH")
-        echo "✅ Library Root is: $LIB_ROOT"
+        # Define where CMake EXPECTS them to be (Inside src)
+        EXPECTED_LIB="${{ github.workspace }}/blender_src/lib"
         
-        # 3. Create the Symlink (CRITICAL FIX)
-        #    CMake wants 'arm64', we have 'ios_arm64'. We link them.
-        cd "$LIB_ROOT"
-        if [ ! -d "arm64" ]; then
-            echo "🔗 Creating symlink: arm64 -> ios_arm64"
+        # If they aren't there, link them
+        if [ "$FOUND_LIB" != "$EXPECTED_LIB" ]; then
+            echo "🔗 Linking lib folder to expected location..."
+            rm -rf "$EXPECTED_LIB"
+            ln -s "$FOUND_LIB" "$EXPECTED_LIB"
+        fi
+        
+        # Fix Naming (Symlinks)
+        cd "$FOUND_LIB"
+        
+        # iOS Fix: CMake looks for 'arm64', we have 'ios_arm64'
+        if [ -d "ios_arm64" ] && [ ! -d "arm64" ]; then
             ln -s ios_arm64 arm64
-        else
-            echo "Symlink 'arm64' already exists."
         fi
         
-        # 4. Save path for next step
-        echo "BLENDER_LIBDIR=$LIB_ROOT" >> $GITHUB_ENV
+        # Host Fix: CMake looks for 'darwin', we have 'macos_arm64'
+        if [ -d "macos_arm64" ] && [ ! -d "darwin" ]; then
+            ln -s macos_arm64 darwin
+        fi
+        
+        echo "BLENDER_LIBDIR=$EXPECTED_LIB" >> $GITHUB_ENV
 
     - name: Configure CMake
       run: |
-        BUILD_DIR="${{ github.workspace }}/build_ios"
-        SRC_DIR="${{ github.workspace }}/blender_src"
-        
-        mkdir -p "$BUILD_DIR"
-        cd "$BUILD_DIR"
+        mkdir -p "${{ github.workspace }}/build_ios"
+        cd "${{ github.workspace }}/build_ios"
         
         echo "Configuring CMake..."
-        echo "Using Libs at: ${{ env.BLENDER_LIBDIR }}"
         
+        # We explicitly set the deployment target to 16.0 
+        # This ensures the app runs on your iPadOS 26 device.
         cmake -G Xcode \
           -DCMAKE_SYSTEM_NAME=iOS \
           -DCMAKE_OSX_ARCHITECTURES=arm64 \
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO \
+          -DCMAKE_XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET=16.0 \
           -DLIBDIR="${{ env.BLENDER_LIBDIR }}" \
-          "$SRC_DIR"
+          "${{ github.workspace }}/blender_src"
 
     - name: Build Blender App
       run: |
