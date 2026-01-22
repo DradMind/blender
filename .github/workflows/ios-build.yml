@@ -25,49 +25,43 @@ jobs:
         git lfs pull
         
         # 2. Update standard libraries (Host: macOS)
+        # This downloads files to the SIBLING folder (../lib)
         make update
         
         # 3. Download iOS libraries
-        # We run this exactly as the developers do
+        # This also puts files in the SIBLING folder (../lib/ios_arm64)
         python3 build_files/utils/make_update.py --use-ios-libraries
 
-    - name: Locate Libraries (Auto-Discovery)
-      id: find_libs
+    - name: Move Libraries to Source
+      working-directory: ./blender
       run: |
-        # Search for the 'ios_arm64' folder anywhere in the workspace
-        # This prevents "No such file" errors by finding exactly where they are.
+        # Debug: Show where they are currently
+        echo "Looking for libraries in sibling folder..."
+        ls -d ../lib || echo "Sibling lib not found!"
         
-        LIB_PATH=$(find . -type d -name "ios_arm64" -print -quit)
+        # CRITICAL FIX: 
+        # Move the downloaded 'ios_arm64' and 'macos_arm64' FROM ../lib TO ./lib
+        # This puts them exactly where CMake is asking for them.
         
-        if [ -z "$LIB_PATH" ]; then
-          echo "ERROR: ios_arm64 libraries not found! Download failed."
-          exit 1
-        fi
+        echo "Moving libraries inside..."
+        mv ../lib/ios_arm64 lib/
+        mv ../lib/macos_arm64 lib/
         
-        # Get the parent directory (which is the 'lib' root CMake wants)
-        # If path is ./blender/lib/ios_arm64, we want ./blender/lib
-        REAL_LIB_ROOT=$(dirname "$LIB_PATH")
-        
-        # Convert to absolute path
-        ABS_LIB_ROOT=$(cd "$REAL_LIB_ROOT" && pwd)
-        
-        echo "Found libraries at: $ABS_LIB_ROOT"
-        echo "LIBDIR=$ABS_LIB_ROOT" >> $GITHUB_ENV
+        # Verify they are now in the correct place
+        ls -R lib/ios_arm64/python || echo "ERROR: Move failed!"
 
     - name: Configure CMake
       run: |
         mkdir build_ios
         cd build_ios
         
-        echo "Telling CMake to use libs at: ${{ env.LIBDIR }}"
-        
-        # We use the discovered path in -DLIBDIR
+        # We no longer need to specify LIBDIR because we moved the files 
+        # to the default location CMake expects.
         cmake -G Xcode \
           -DCMAKE_SYSTEM_NAME=iOS \
           -DCMAKE_OSX_ARCHITECTURES=arm64 \
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO \
-          -DLIBDIR="${{ env.LIBDIR }}" \
           ../blender
 
     - name: Build Blender App
