@@ -6,7 +6,11 @@ on:
 jobs:
   build:
     runs-on: macos-14  # Apple Silicon (M1/M2) runner
-    
+    env:
+      # SIMPLIFICATION: We force the library location using this variable.
+      # This stops the script from putting files in "sibling" or hidden folders.
+      BLENDER_LIBDIR: ${{ github.workspace }}/blender/lib
+
     steps:
     - name: Install System Tools
       run: |
@@ -18,56 +22,43 @@ jobs:
         # Clone explicitly from Blender's official server
         git clone --branch ios --depth 1 https://projects.blender.org/blender/blender.git blender
 
-    - name: Download Libraries
+    - name: Download Libraries (Forced Location)
       working-directory: ./blender
       run: |
         # 1. Pull LFS data
         git lfs pull
         
-        # 2. Update standard libraries (Host: macOS)
-        # This downloads files to the SIBLING folder (../lib)
+        # 2. Update standard libraries (Host)
+        # Because we set BLENDER_LIBDIR above, this MUST put them in blender/lib
         make update
         
         # 3. Download iOS libraries
-        # This also puts files in the SIBLING folder (../lib/ios_arm64)
         python3 build_files/utils/make_update.py --use-ios-libraries
 
-    - name: Move Libraries to Source
+    - name: Verify Download
       working-directory: ./blender
       run: |
-        # Debug: Show where they are currently
-        echo "Looking for libraries in sibling folder..."
-        ls -d ../lib || echo "Sibling lib not found!"
-        
-        # CRITICAL FIX: 
-        # Move the downloaded 'ios_arm64' and 'macos_arm64' FROM ../lib TO ./lib
-        # This puts them exactly where CMake is asking for them.
-        
-        echo "Moving libraries inside..."
-        mv ../lib/ios_arm64 lib/
-        mv ../lib/macos_arm64 lib/
-        
-        # Verify they are now in the correct place
-        ls -R lib/ios_arm64/python || echo "ERROR: Move failed!"
+        # This is a sanity check. If this fails, the download failed (network/server issue).
+        echo "Checking for iOS libraries in: $BLENDER_LIBDIR/ios_arm64"
+        ls -R lib/ios_arm64/python || exit 1
 
     - name: Configure CMake
       run: |
         mkdir build_ios
         cd build_ios
         
-        # We no longer need to specify LIBDIR because we moved the files 
-        # to the default location CMake expects.
+        # We explicitly tell CMake: "The libs are here."
         cmake -G Xcode \
           -DCMAKE_SYSTEM_NAME=iOS \
           -DCMAKE_OSX_ARCHITECTURES=arm64 \
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO \
+          -DLIBDIR="${{ env.BLENDER_LIBDIR }}" \
           ../blender
 
     - name: Build Blender App
       working-directory: ./build_ios
       run: |
-        # Build Release version
         xcodebuild -project Blender.xcodeproj \
           -scheme Blender \
           -configuration Release \
