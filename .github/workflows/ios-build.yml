@@ -1,11 +1,11 @@
-name: Build Blender for iPad (Arg Fix)
+name: Build Blender for iPad (Nuclear Fix)
 
 on:
   workflow_dispatch: # Manual trigger
 
 jobs:
   build:
-    runs-on: macos-15 # Uses Xcode 16 (iOS 18 SDK)
+    runs-on: macos-15 # Xcode 16 (iOS 18 SDK)
     
     steps:
     - name: Select Latest Xcode
@@ -25,71 +25,67 @@ jobs:
     - name: Download Libraries
       working-directory: ${{ github.workspace }}/blender_src
       run: |
-        # 1. Download Host Libs (macOS)
-        # We use the standard 'make update' command which wraps the python script correctly.
-        # This prevents the "unrecognized arguments" error.
+        # 1. Download Host Libs (Standard update)
         echo ">>> Downloading macOS Host Libs..."
         make update
         
         # 2. Download Target Libs (iOS)
-        # We call the python script specifically for the iOS additions.
         echo ">>> Downloading iOS Target Libs..."
         python3 build_files/utils/make_update.py --use-ios-libraries
 
-    - name: Fix Library Structure
-      id: fix_libs
+    - name: Force Library Layout
+      id: force_layout
       run: |
         echo "=========================================="
-        echo "   FIXING LIBRARY STRUCTURE               "
+        echo "   FORCING LIBRARY LAYOUT                 "
         echo "=========================================="
         
-        # Find where the libraries landed
-        # 'make update' usually puts them in a sibling folder (../lib) relative to source
-        SIBLING_LIB="${{ github.workspace }}/lib"
-        INTERNAL_LIB="${{ github.workspace }}/blender_src/lib"
+        SRC_DIR="${{ github.workspace }}/blender_src"
+        TARGET_LIB="$SRC_DIR/lib"
         
-        # Check if sibling exists
+        # 1. FIND THE DOWNLOADED LIBS
+        # They are usually in a sibling folder named 'lib'
+        SIBLING_LIB="${{ github.workspace }}/lib"
+        
         if [ -d "$SIBLING_LIB" ]; then
-            echo "✅ Found libraries in sibling folder: $SIBLING_LIB"
-            
-            # Link it to where CMake wants it (inside blender_src)
-            if [ ! -d "$INTERNAL_LIB" ]; then
-                echo "🔗 Linking sibling lib -> internal lib"
-                ln -s "$SIBLING_LIB" "$INTERNAL_LIB"
-            fi
-            
-            # Now fixing naming INSIDE that folder
-            cd "$SIBLING_LIB"
-            
-            # Fix iOS: Link ios_arm64 -> arm64
-            if [ -d "ios_arm64" ] && [ ! -d "arm64" ]; then
-                echo "🔗 Linking ios_arm64 -> arm64"
-                ln -s ios_arm64 arm64
-            fi
-            
-            # Fix macOS: Link macos_arm64 -> darwin
-            if [ -d "macos_arm64" ] && [ ! -d "darwin" ]; then
-                echo "🔗 Linking macos_arm64 -> darwin"
-                ln -s macos_arm64 darwin
-            fi
-            
-            echo "BLENDER_LIBDIR=$INTERNAL_LIB" >> $GITHUB_ENV
-            
-        elif [ -d "$INTERNAL_LIB/ios_arm64" ]; then
-             # Fallback: maybe they are already inside?
-             echo "✅ Found libraries already inside blender_src"
-             cd "$INTERNAL_LIB"
-             
-             # Apply same fixes
-             if [ -d "ios_arm64" ] && [ ! -d "arm64" ]; then ln -s ios_arm64 arm64; fi
-             if [ -d "macos_arm64" ] && [ ! -d "darwin" ]; then ln -s macos_arm64 darwin; fi
-             
-             echo "BLENDER_LIBDIR=$INTERNAL_LIB" >> $GITHUB_ENV
-        else
-            echo "❌ ERROR: Libraries failed to download or are lost!"
-            ls -R "${{ github.workspace }}"
+            echo "✅ Found libraries in sibling folder."
+            # Move them INSIDE source so we have a single location
+            mkdir -p "$TARGET_LIB"
+            cp -R "$SIBLING_LIB/" "$TARGET_LIB/"
+        elif [ ! -d "$TARGET_LIB/ios_arm64" ]; then
+            echo "❌ ERROR: Libraries not found in sibling OR source folder!"
+            find "${{ github.workspace }}" -maxdepth 3 -name "ios_arm64"
             exit 1
         fi
+        
+        # 2. CREATE EVERY POSSIBLE SYMLINK
+        # We don't take chances. We link everything to everything.
+        cd "$TARGET_LIB"
+        
+        echo "Creating aliases..."
+        
+        # Target Aliases
+        if [ -d "ios_arm64" ]; then
+            ln -sf ios_arm64 arm64
+            ln -sf ios_arm64 ios
+        else
+            echo "❌ CRITICAL: ios_arm64 missing!"
+            exit 1
+        fi
+        
+        # Host Aliases (The likely cause of your error)
+        if [ -d "macos_arm64" ]; then
+            ln -sf macos_arm64 darwin
+            ln -sf macos_arm64 macos
+        else
+            echo "❌ CRITICAL: macos_arm64 missing! (Host tools will fail)"
+            exit 1
+        fi
+        
+        echo "✅ FINAL LIB CONTENT:"
+        ls -l
+        
+        echo "BLENDER_LIBDIR=$TARGET_LIB" >> $GITHUB_ENV
 
     - name: Configure CMake
       run: |
