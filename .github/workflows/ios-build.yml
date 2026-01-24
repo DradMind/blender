@@ -1,11 +1,11 @@
-name: Build Blender for iPad (Ironclad Fix)
+name: Build Blender for iPad (Search & Rescue)
 
 on:
   workflow_dispatch: # Manual trigger
 
 jobs:
   build:
-    runs-on: macos-15 # Xcode 16 (iOS 18 SDK / Compatible with iPadOS 26)
+    runs-on: macos-15 # Xcode 16 (iOS 18 SDK)
     
     steps:
     - name: Select Latest Xcode
@@ -20,88 +20,95 @@ jobs:
 
     - name: Checkout Code
       run: |
-        # Clone Source
         git clone --branch ios --depth 1 https://projects.blender.org/blender/blender.git blender_src
 
-    - name: Download Libraries (Script + Force LFS)
+    - name: Download Libraries
       working-directory: ${{ github.workspace }}/blender_src
       run: |
-        echo ">>> 1. Running standard make update (Host Libs)..."
-        make update
+        # We run the updates. We don't care where they put the files yet.
+        # We will find them in the next step.
+        echo ">>> Downloading Host (macOS)..."
+        make update || true  # Allow fail, we fix later
         
-        echo ">>> 2. Running iOS update (Target Libs)..."
-        python3 build_files/utils/make_update.py --use-ios-libraries
+        echo ">>> Downloading Target (iOS)..."
+        python3 build_files/utils/make_update.py --use-ios-libraries || true
 
-    - name: Manually Verify & Fix Libraries
-      id: fix_libs
+    - name: Search & Rescue Libraries
+      id: rescue_libs
       run: |
         echo "=========================================="
-        echo "   MANUAL LIBRARY VERIFICATION & FIX      "
+        echo "   SEARCH & RESCUE LIBRARIES              "
         echo "=========================================="
         
-        # 1. LOCATE THE LIBRARIES (Usually in ../lib)
-        SIBLING_LIB="${{ github.workspace }}/lib"
+        # 1. FIND THEM
+        # Search for 'ios_arm64' anywhere in the workspace
+        FOUND_IOS=$(find "${{ github.workspace }}" -type d -name "ios_arm64" -print -quit)
         
-        if [ ! -d "$SIBLING_LIB" ]; then
-             echo "❌ ERROR: Sibling lib folder not found!"
-             exit 1
-        fi
-        
-        echo "✅ Found libraries at: $SIBLING_LIB"
-        
-        # 2. FORCE GIT LFS PULL (The Secret Sauce)
-        # We go into each folder and force it to download real binaries
-        
-        echo ">>> Forcing LFS Pull for HOST (macos_arm64)..."
-        if [ -d "$SIBLING_LIB/macos_arm64" ]; then
-            cd "$SIBLING_LIB/macos_arm64"
-            git lfs install --local
-            git lfs pull
-            cd - > /dev/null
-        else
-            echo "⚠️ Warning: macos_arm64 folder missing!"
-        fi
-        
-        echo ">>> Forcing LFS Pull for TARGET (ios_arm64)..."
-        if [ -d "$SIBLING_LIB/ios_arm64" ]; then
-            cd "$SIBLING_LIB/ios_arm64"
-            git lfs install --local
-            git lfs pull
-            cd - > /dev/null
-        else
-            echo "❌ CRITICAL: ios_arm64 folder missing!"
+        if [ -z "$FOUND_IOS" ]; then
+            echo "❌ CRITICAL: Libraries were not downloaded anywhere!"
             exit 1
         fi
-
-        # 3. MOVE TO SOURCE (Consolidate)
-        # The error explicitly asked for libs at: .../blender_src/lib
-        # We will put them EXACTLY there.
         
-        TARGET_LIB="${{ github.workspace }}/blender_src/lib"
+        echo "✅ Found iOS libs at: $FOUND_IOS"
         
-        echo ">>> Moving verified libraries to: $TARGET_LIB"
-        mkdir -p "$TARGET_LIB"
-        cp -R "$SIBLING_LIB/" "$TARGET_LIB/"
+        # Determine where the download script put the root 'lib' folder
+        # If found at .../lib/ios_arm64, the root is .../lib
+        CURRENT_LIB_ROOT=$(dirname "$FOUND_IOS")
+        TARGET_LIB_ROOT="${{ github.workspace }}/blender_src/lib"
         
-        # 4. CREATE ALIASES (Safety Net)
-        cd "$TARGET_LIB"
+        echo "✅ Current Lib Root: $CURRENT_LIB_ROOT"
+        echo "🎯 Target Lib Root:  $TARGET_LIB_ROOT"
         
-        # Host Aliases
-        if [ -d "macos_arm64" ]; then
-            ln -sf macos_arm64 darwin
-            ln -sf macos_arm64 macos
+        # 2. MOVE THEM (If they aren't already in the right place)
+        if [ "$CURRENT_LIB_ROOT" != "$TARGET_LIB_ROOT" ]; then
+            echo "🚚 Moving libraries to target location..."
+            mkdir -p "$TARGET_LIB_ROOT"
+            # We move the CONTENTS of the found lib folder to the target
+            cp -R "$CURRENT_LIB_ROOT/" "$TARGET_LIB_ROOT/"
+        else
+            echo "✅ Libraries are already in the correct location."
         fi
         
-        # Target Aliases
+        # 3. FORCE LFS PULL (Fix empty files)
+        # We now know for a fact the files are at $TARGET_LIB_ROOT
+        
+        echo "force-pulling Host (macOS)..."
+        if [ -d "$TARGET_LIB_ROOT/macos_arm64" ]; then
+            cd "$TARGET_LIB_ROOT/macos_arm64"
+            git lfs install --local
+            git lfs pull
+        else
+            echo "⚠️ Host libs missing. Attempting to clone manually..."
+            cd "$TARGET_LIB_ROOT"
+            git clone https://projects.blender.org/blender/lib-macos_arm64.git macos_arm64
+        fi
+        
+        echo "force-pulling Target (iOS)..."
+        if [ -d "$TARGET_LIB_ROOT/ios_arm64" ]; then
+            cd "$TARGET_LIB_ROOT/ios_arm64"
+            git lfs install --local
+            git lfs pull
+        fi
+
+        # 4. FORCE ALIASES (Fix naming errors)
+        cd "$TARGET_LIB_ROOT"
+        
+        # Link ios_arm64 -> arm64 (Fixes 'IOS build requires...' error)
         if [ -d "ios_arm64" ]; then
             ln -sf ios_arm64 arm64
             ln -sf ios_arm64 ios
         fi
         
-        echo "✅ Final Library Status:"
+        # Link macos_arm64 -> darwin (Fixes Host Tools error)
+        if [ -d "macos_arm64" ]; then
+            ln -sf macos_arm64 darwin
+            ln -sf macos_arm64 macos
+        fi
+        
+        echo "✅ FINAL CONTENTS OF $TARGET_LIB_ROOT:"
         ls -F
         
-        echo "BLENDER_LIBDIR=$TARGET_LIB" >> $GITHUB_ENV
+        echo "BLENDER_LIBDIR=$TARGET_LIB_ROOT" >> $GITHUB_ENV
 
     - name: Configure CMake
       run: |
