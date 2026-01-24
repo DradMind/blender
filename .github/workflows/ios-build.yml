@@ -9,7 +9,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-15 # Xcode 16 (iOS 18 SDK)
+    runs-on: macos-14 # Xcode 15 (iOS 17 SDK)
     
     steps:
     - name: Select Latest Xcode
@@ -127,7 +127,7 @@ jobs:
           -DCMAKE_OSX_ARCHITECTURES=arm64 \
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO \
-          -DCMAKE_XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET=26.0 \
+          -DCMAKE_XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET=17.0 \
           -DLIBDIR="${{ env.BLENDER_LIBDIR }}" \
           "${{ github.workspace }}/blender_src"
 
