@@ -1,4 +1,4 @@
-name: Build Blender for iPad (Final Diagnostic)
+name: Build Blender for iPad (Main Branch Fix)
 
 on:
   workflow_dispatch: # Manual trigger
@@ -18,45 +18,51 @@ jobs:
         brew install cmake git-lfs tree
         git lfs install --skip-smudge
 
-    - name: Setup Workspace
+    - name: Setup Workspace (Sibling Structure)
       working-directory: ${{ github.workspace }}
       run: |
-        # 1. Clone Source
-        git clone --branch ios --depth 1 https://projects.blender.org/blender/blender.git blender
+        echo "=========================================="
+        echo "   SETTING UP WORKSPACE (MAIN BRANCH)     "
+        echo "=========================================="
         
-        # 2. Setup Libs
+        # 1. Clone Source Code (MAIN BRANCH)
+        # We switch to 'main' to match the Python 3.13 libraries
+        echo ">>> Cloning Blender Source (main)..."
+        git clone --branch main --depth 1 https://projects.blender.org/blender/blender.git blender
+        
+        # 2. Setup Libraries Folder
+        echo ">>> Creating Lib folder..."
         mkdir -p lib
         cd lib
         
-        # 3. Clone Host (macOS)
-        echo ">>> Cloning Host Libs..."
+        # 3. Clone HOST Libraries (macOS)
+        echo ">>> Cloning macOS libs (Host)..."
         git clone --depth 1 https://projects.blender.org/blender/lib-macos_arm64.git macos_arm64
         
-        # 4. Clone Target (iOS)
-        echo ">>> Cloning Target Libs..."
+        # 4. Clone TARGET Libraries (iOS)
+        echo ">>> Cloning iOS libs (Target)..."
         git clone --depth 1 https://projects.blender.org/blender/lib-ios_arm64.git ios_arm64
         
-        # 5. Force LFS
-        echo ">>> Pulling LFS..."
-        cd macos_arm64 && git lfs install --local && git lfs pull && cd ..
-        cd ios_arm64 && git lfs install --local && git lfs pull && cd ..
+        # 5. Force LFS Download (Get Real Binaries)
+        echo ">>> Pulling LFS Binary Data..."
+        
+        cd macos_arm64
+        git lfs install --local
+        git lfs pull
+        cd ..
+        
+        cd ios_arm64
+        git lfs install --local
+        git lfs pull
+        cd ..
         
         # 6. Create Aliases
+        # Link macos_arm64 -> darwin (Host)
         ln -s macos_arm64 darwin
+        # Link ios_arm64 -> arm64 (Target)
         ln -s ios_arm64 arm64
-
-    - name: Diagnostic Listing (Debug)
-      working-directory: ${{ github.workspace }}/lib
-      run: |
-        echo "=========================================="
-        echo "      LIBRARY CONTENTS CHECK              "
-        echo "=========================================="
         
-        echo "Listing 'darwin/python/bin' to see version:"
-        ls -F darwin/python/bin/ || echo "❌ Python bin folder missing"
-        
-        echo "Listing 'arm64' root:"
-        ls -F arm64/ | head -n 10
+        echo "✅ Setup Complete."
 
     - name: Configure CMake
       working-directory: ${{ github.workspace }}
@@ -65,7 +71,10 @@ jobs:
         LIB_DIR="${{ github.workspace }}/lib"
         
         echo "Configuring CMake..."
+        echo "Source: $SOURCE_DIR"
+        echo "Libs:   $LIB_DIR"
         
+        # We use the main branch which supports the latest libs
         cmake -G Xcode \
           -S "$SOURCE_DIR" \
           -B build_ios \
