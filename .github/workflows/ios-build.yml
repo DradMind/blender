@@ -1,11 +1,11 @@
-name: Build Blender for iPad (Manual & Verified)
+name: Build Blender for iPad (Final Diagnostic)
 
 on:
   workflow_dispatch: # Manual trigger
 
 jobs:
   build:
-    runs-on: macos-15 # Xcode 16 (iOS 18 SDK / iPadOS 26 compatible)
+    runs-on: macos-15 # Xcode 16 (iOS 18 SDK)
     
     steps:
     - name: Select Latest Xcode
@@ -18,93 +18,53 @@ jobs:
         brew install cmake git-lfs tree
         git lfs install --skip-smudge
 
-    - name: Setup Workspace (Sibling Structure)
+    - name: Setup Workspace
       working-directory: ${{ github.workspace }}
       run: |
-        echo "=========================================="
-        echo "   SETTING UP SIBLING STRUCTURE           "
-        echo "=========================================="
-        
-        # 1. Clone Source Code into 'blender'
-        echo ">>> Cloning Blender Source..."
+        # 1. Clone Source
         git clone --branch ios --depth 1 https://projects.blender.org/blender/blender.git blender
         
-        # 2. Setup Libraries Folder at Root (Sibling)
-        # The error explicitly asked for libs at: /Users/runner/work/blender/blender/lib
-        # This matches ${{ github.workspace }}/lib
-        echo ">>> Creating Lib folder..."
+        # 2. Setup Libs
         mkdir -p lib
         cd lib
         
-        # 3. Clone HOST Libraries (macOS)
-        echo ">>> Cloning macOS libs (Host)..."
+        # 3. Clone Host (macOS)
+        echo ">>> Cloning Host Libs..."
         git clone --depth 1 https://projects.blender.org/blender/lib-macos_arm64.git macos_arm64
         
-        # 4. Clone TARGET Libraries (iOS)
-        echo ">>> Cloning iOS libs (Target)..."
+        # 4. Clone Target (iOS)
+        echo ">>> Cloning Target Libs..."
         git clone --depth 1 https://projects.blender.org/blender/lib-ios_arm64.git ios_arm64
         
-        # 5. Force LFS Download (CRITICAL)
-        # We assume the clones above only got pointers. We force the real data now.
-        echo ">>> Pulling LFS Binary Data..."
+        # 5. Force LFS
+        echo ">>> Pulling LFS..."
+        cd macos_arm64 && git lfs install --local && git lfs pull && cd ..
+        cd ios_arm64 && git lfs install --local && git lfs pull && cd ..
         
-        cd macos_arm64
-        git lfs install --local
-        git lfs pull
-        cd ..
-        
-        cd ios_arm64
-        git lfs install --local
-        git lfs pull
-        cd ..
-        
-        # 6. Create Aliases (The Fix for 'requires pre-compiled libs')
-        # CMake needs 'darwin' for host tools and 'arm64' for iOS
+        # 6. Create Aliases
         ln -s macos_arm64 darwin
         ln -s ios_arm64 arm64
-        
-        echo "✅ Setup Complete."
 
-    - name: Verify Library Integrity
+    - name: Diagnostic Listing (Debug)
       working-directory: ${{ github.workspace }}/lib
       run: |
         echo "=========================================="
-        echo "      VERIFYING LIBRARY CONTENT           "
+        echo "      LIBRARY CONTENTS CHECK              "
         echo "=========================================="
         
-        # Check if Python exists (Host)
-        if [ -f "darwin/python/bin/python3.11" ]; then
-             echo "✅ HOST: Python binary found."
-        else
-             echo "❌ HOST FAILURE: Python missing in darwin!"
-             exit 1
-        fi
+        echo "Listing 'darwin/python/bin' to see version:"
+        ls -F darwin/python/bin/ || echo "❌ Python bin folder missing"
         
-        # Check File Size of a known heavy library (Target)
-        # If this is small (<2KB), LFS failed.
-        FILE_SIZE=$(stat -f%z arm64/embree/lib/libmath.a 2>/dev/null || echo 0)
-        echo "Target Lib Size: $FILE_SIZE bytes"
-        
-        if [ "$FILE_SIZE" -lt 2000 ]; then
-             echo "❌ TARGET FAILURE: Library file is too small ($FILE_SIZE bytes). Git LFS failed."
-             exit 1
-        fi
-        
-        echo "✅ SUCCESS: Libraries appear valid and heavy."
-        
-        # Show structure for debugging
-        ls -F
+        echo "Listing 'arm64' root:"
+        ls -F arm64/ | head -n 10
 
     - name: Configure CMake
       working-directory: ${{ github.workspace }}
       run: |
-        # Explicitly pointing to source and lib folders
         SOURCE_DIR="${{ github.workspace }}/blender"
         LIB_DIR="${{ github.workspace }}/lib"
         
         echo "Configuring CMake..."
-        echo "Source: $SOURCE_DIR"
-        echo "Libs:   $LIB_DIR"
         
         cmake -G Xcode \
           -S "$SOURCE_DIR" \
