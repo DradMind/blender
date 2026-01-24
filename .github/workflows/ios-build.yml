@@ -1,19 +1,17 @@
-name: Build Blender iPad (Metal + Cache)
+name: Build Blender iPad (Fixed)
 
 on:
   workflow_dispatch: # Manual trigger
 
 jobs:
   build-blender-ios:
-    # 'macos-latest' in 2026 typically points to the latest stable image.
-    # This ensures we have a recent Xcode (likely Xcode 26.x or late 17.x).
     runs-on: macos-latest
     
     env:
       BLENDER_REPO: "https://projects.blender.org/blender/blender.git"
       BLENDER_BRANCH: "ios" 
-      IPADOS_TARGET: "18.0" # Updated to 18.0 as requested
-      PYTHON_VERSION: "3.11" # Blender 5.x/IOS branch typically locks to this
+      IPADOS_TARGET: "18.0" 
+      PYTHON_VERSION: "3.11" 
 
     steps:
       # 1. Install System Tools
@@ -22,13 +20,13 @@ jobs:
           brew install cmake ninja svn git-lfs
           git lfs install
 
-      # 2. Cache Libraries (The "Speed Up" Step)
-      # This saves the ~2GB download of pre-compiled libs for next time.
+      # 2. Cache Libraries
+      # This speeds up future runs by saving the heavy lib folder
       - name: Cache Blender Libraries
         id: cache-libs
         uses: actions/cache@v4
         with:
-          path: ./lib/darwin_arm64
+          path: ./lib
           key: blender-libs-ios-${{ hashFiles('blender/build_files/build_environment/install_deps.sh') }}
           restore-keys: |
             blender-libs-ios-
@@ -48,10 +46,22 @@ jobs:
           # This script handles the heavy lifting for libs
           python3 ./build_files/utils/make_update.py --use-ios-libraries
 
-      # 5. Configure CMake (Metal & Cycles Enabled)
+      # 5. Debug Library Path (Safety Check)
+      # This prints where the Python lib actually resides, helpful if paths change
+      - name: Debug Library Structure
+        run: |
+          echo "Checking Python library location..."
+          find lib/ios_arm64 -name "libpython*.a"
+
+      # 6. Configure CMake (FIXED)
+      # We manually define Python paths and disable missing libs here
       - name: Configure CMake
         working-directory: blender
         run: |
+          # Define absolute path to the libraries
+          IOS_LIB_PATH="$(pwd)/../lib/ios_arm64"
+          echo "Using Library Path: $IOS_LIB_PATH"
+
           cmake -S . -B ../build_ios -G Xcode \
             -DCMAKE_SYSTEM_NAME=iOS \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=${{ env.IPADOS_TARGET }} \
@@ -62,22 +72,33 @@ jobs:
             -DWITH_METAL_BACKEND=ON \
             -DWITH_CYCLES_DEVICE_METAL=ON \
             -DWITH_CYCLES_OSL=OFF \
-            -DWITH_PYTHON_INSTALL=OFF
+            -DWITH_PYTHON_INSTALL=OFF \
+            \
+            -DPYTHON_INCLUDE_DIR="${IOS_LIB_PATH}/python/include/python3.11" \
+            -DPYTHON_LIBRARY="${IOS_LIB_PATH}/python/lib/libpython3.11.a" \
+            -DPYTHON_INCLUDE_CONFIG_DIR="${IOS_LIB_PATH}/python/include/python3.11" \
+            \
+            -DWITH_ALEMBIC=OFF \
+            -DWITH_OPENSUBDIV=OFF \
+            -DWITH_CODEC_SNDFILE=OFF \
+            -DWITH_MATERIALX=OFF \
+            -DWITH_GMP=OFF \
+            -DWITH_HARU=OFF
 
-      # 6. Build Blender (Parallel)
+      # 7. Build Blender (Parallel)
       - name: Build with Xcode
         run: |
           cmake --build build_ios --config Release --target install --parallel $(sysctl -n hw.ncpu)
 
-      # 7. Enable File Sharing (Crucial for iPad)
-      # Without this, you cannot get .blend files IN or OUT of the iPad.
+      # 8. Patch Info.plist for File Sharing
+      # Allows you to see the "Blender" folder in the Files app
       - name: Patch Info.plist for File Sharing
         run: |
           PLIST="build_ios/Release-iphoneos/Blender.app/Info.plist"
           /usr/libexec/PlistBuddy -c "Add :UIFileSharingEnabled bool true" "$PLIST"
           /usr/libexec/PlistBuddy -c "Add :LSSupportsOpeningDocumentsInPlace bool true" "$PLIST"
 
-      # 8. Package IPA
+      # 9. Package IPA
       - name: Create IPA Package
         run: |
           mkdir -p BlenderIPA/Payload
@@ -85,9 +106,9 @@ jobs:
           cd BlenderIPA
           zip -r ../Blender_Metal_iPad.ipa Payload
 
-      # 9. Upload
+      # 10. Upload
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: Blender_Metal_iPad_${{ env.IPADOS_TARGET }}
+          name: Blender_Metal_iPad_Fixed
           path: Blender_Metal_iPad.ipa
