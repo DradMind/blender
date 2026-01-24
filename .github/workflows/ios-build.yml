@@ -1,4 +1,4 @@
-name: Build Blender for iPad (Force Host Libs)
+name: Build Blender for iPad (Python Fix)
 
 on:
   workflow_dispatch: # Manual trigger
@@ -45,32 +45,50 @@ jobs:
         cd ios_arm64 && git lfs install --local && git lfs pull && cd ..
         
         # 6. Create Aliases
-        # We link 'darwin' to 'macos_arm64' so host tools find them
         ln -s macos_arm64 darwin
         ln -s ios_arm64 arm64
 
-    - name: Patch Build Scripts (The Bypass)
+    - name: Patch Build Scripts
       working-directory: ${{ github.workspace }}/blender
       run: |
-        echo "=========================================="
-        echo "   PATCHING BUILD SCRIPTS                 "
-        echo "=========================================="
-        
-        # 1. Fix Compiler Version Check (17.0 -> 15.0)
+        # 1. Downgrade Compiler Check
         sed -i '' 's/VERSION_LESS "17.0"/VERSION_LESS "15.0"/g' CMakeLists.txt
         
-        # 2. Fix "Mac OSX requires pre-compiled libs" Error
-        # The script build_files/cmake/platform/platform_apple.cmake checks for specific files.
-        # If it fails, it throws a fatal error. We will COMMENT OUT that error.
+        # 2. Disable Fatal Error for Mac Libs
+        sed -i '' 's/message(FATAL_ERROR/message(STATUS/g' build_files/cmake/platform/platform_apple.cmake
+
+    - name: LOCATE PYTHON (The Fix)
+      id: find_py
+      working-directory: ${{ github.workspace }}/lib
+      run: |
+        echo "=========================================="
+        echo "   HUNTING FOR PYTHON 3.13                "
+        echo "=========================================="
         
-        TARGET_FILE="build_files/cmake/platform/platform_apple.cmake"
+        # Find the Library File (.a)
+        # We look inside darwin (macos_arm64)
+        PY_LIB=$(find darwin -name "libpython3.13.a" | head -n 1)
         
-        # We look for the message(FATAL_ERROR "Mac OSX requires pre-compiled libs...")
-        # and replace 'FATAL_ERROR' with 'STATUS' so it just warns us instead of stopping.
+        # Find the Header File (Python.h)
+        PY_INC=$(find darwin -name "Python.h" | head -n 1)
         
-        sed -i '' 's/message(FATAL_ERROR/message(STATUS/g' "$TARGET_FILE"
+        if [ -z "$PY_LIB" ] || [ -z "$PY_INC" ]; then
+            echo "❌ CRITICAL: Could not find Python 3.13 files!"
+            echo "Listing darwin contents:"
+            find darwin -maxdepth 4 -name "*python*"
+            exit 1
+        fi
         
-        echo "✅ Patched $TARGET_FILE to treat errors as warnings."
+        # Get absolute paths
+        PY_LIB_ABS="${{ github.workspace }}/lib/$PY_LIB"
+        PY_INC_ABS="${{ github.workspace }}/lib/$(dirname $PY_INC)"
+        
+        echo "✅ Found Library: $PY_LIB_ABS"
+        echo "✅ Found Include: $PY_INC_ABS"
+        
+        # Save to ENV for CMake
+        echo "PY_LIB_PATH=$PY_LIB_ABS" >> $GITHUB_ENV
+        echo "PY_INC_PATH=$PY_INC_ABS" >> $GITHUB_ENV
 
     - name: Configure CMake
       working-directory: ${{ github.workspace }}
@@ -79,6 +97,8 @@ jobs:
         LIB_DIR="${{ github.workspace }}/lib"
         
         echo "Configuring CMake..."
+        echo "Forcing Python Lib: ${{ env.PY_LIB_PATH }}"
+        echo "Forcing Python Inc: ${{ env.PY_INC_PATH }}"
         
         cmake -G Xcode \
           -S "$SOURCE_DIR" \
@@ -88,7 +108,10 @@ jobs:
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO \
           -DCMAKE_XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET=16.0 \
-          -DLIBDIR="$LIB_DIR"
+          -DLIBDIR="$LIB_DIR" \
+          -DPYTHON_LIBRARY="${{ env.PY_LIB_PATH }}" \
+          -DPYTHON_INCLUDE_DIR="${{ env.PY_INC_PATH }}" \
+          -DPYTHON_VERSION=3.13
 
     - name: Build Blender App
       working-directory: ${{ github.workspace }}/build_ios
