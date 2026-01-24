@@ -1,117 +1,93 @@
-name: Build Blender for iPad (Library Root Fix)
+name: Build Blender iPad (Metal + Cache)
 
 on:
   workflow_dispatch: # Manual trigger
 
 jobs:
-  build:
-    runs-on: macos-15 # Xcode 16.0
+  build-blender-ios:
+    # 'macos-latest' in 2026 typically points to the latest stable image.
+    # This ensures we have a recent Xcode (likely Xcode 26.x or late 17.x).
+    runs-on: macos-latest
     
+    env:
+      BLENDER_REPO: "https://projects.blender.org/blender/blender.git"
+      BLENDER_BRANCH: "ios" 
+      IPADOS_TARGET: "18.0" # Updated to 18.0 as requested
+      PYTHON_VERSION: "3.11" # Blender 5.x/IOS branch typically locks to this
+
     steps:
-    - name: Select Latest Xcode
-      run: |
-        sudo xcode-select -s /Applications/Xcode_16.0.app/Contents/Developer || sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
-        xcodebuild -version
+      # 1. Install System Tools
+      - name: Install Build Tools
+        run: |
+          brew install cmake ninja svn git-lfs
+          git lfs install
 
-    - name: Install System Tools
-      run: |
-        brew install cmake git-lfs tree
-        git lfs install --skip-smudge
+      # 2. Cache Libraries (The "Speed Up" Step)
+      # This saves the ~2GB download of pre-compiled libs for next time.
+      - name: Cache Blender Libraries
+        id: cache-libs
+        uses: actions/cache@v4
+        with:
+          path: ./lib/darwin_arm64
+          key: blender-libs-ios-${{ hashFiles('blender/build_files/build_environment/install_deps.sh') }}
+          restore-keys: |
+            blender-libs-ios-
 
-    - name: Setup Workspace
-      working-directory: ${{ github.workspace }}
-      run: |
-        # 1. Clone Source Code
-        git clone --branch main --depth 1 https://projects.blender.org/blender/blender.git blender
-        
-        # 2. Pull Source Assets
-        cd blender
-        git lfs install --local
-        git lfs pull
-        cd ..
-        
-        # 3. Setup Libraries
-        mkdir -p lib
-        cd lib
-        
-        # 4. Clone Host & Target Libs
-        echo ">>> Cloning Libs..."
-        git clone --depth 1 https://projects.blender.org/blender/lib-macos_arm64.git macos_arm64
-        git clone --depth 1 https://projects.blender.org/blender/lib-ios_arm64.git ios_arm64
-        
-        # 5. Force LFS
-        echo ">>> Pulling Binaries..."
-        cd macos_arm64 && git lfs install --local && git lfs pull && cd ..
-        cd ios_arm64 && git lfs install --local && git lfs pull && cd ..
-        
-        # 6. Create Aliases
-        ln -s macos_arm64 darwin
-        ln -s ios_arm64 arm64
+      # 3. Clone Source (Lightweight)
+      - name: Clone Blender (iOS Branch)
+        run: |
+          git clone --branch ${{ env.BLENDER_BRANCH }} --depth 1 ${{ env.BLENDER_REPO }} blender
 
-    - name: Patch Build Scripts
-      working-directory: ${{ github.workspace }}/blender
-      run: |
-        # 1. Downgrade Compiler Check
-        sed -i '' 's/VERSION_LESS "17.0"/VERSION_LESS "15.0"/g' CMakeLists.txt
-        
-        # 2. Disable Fatal Error for Mac Libs
-        sed -i '' 's/message(FATAL_ERROR/message(STATUS/g' build_files/cmake/platform/platform_apple.cmake
+      # 4. Download iOS Libraries (Only if cache missed)
+      - name: Download iOS Libraries
+        if: steps.cache-libs.outputs.cache-hit != 'true'
+        working-directory: blender
+        run: |
+          git lfs fetch
+          git lfs checkout
+          # This script handles the heavy lifting for libs
+          python3 ./build_files/utils/make_update.py --use-ios-libraries
 
-    - name: Configure CMake
-      working-directory: ${{ github.workspace }}
-      run: |
-        SOURCE_DIR="${{ github.workspace }}/blender"
-        LIB_DIR="${{ github.workspace }}/lib"
-        
-        echo "Configuring CMake..."
-        
-        # We find Python dynamically to be safe
-        PY_LIB=$(find "$LIB_DIR/darwin" -name "libpython3.13.a" | head -n 1)
-        PY_INC_DIR=$(dirname $(find "$LIB_DIR/darwin" -name "Python.h" | head -n 1))
-        
-        # We explicitly set CMAKE_PREFIX_PATH to force finding our libs
-        # And we disable searching system paths
-        
-        cmake -G Xcode \
-          -S "$SOURCE_DIR" \
-          -B build_ios \
-          -DCMAKE_SYSTEM_NAME=iOS \
-          -DCMAKE_OSX_ARCHITECTURES=arm64 \
-          -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
-          -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO \
-          -DCMAKE_XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET=16.0 \
-          -DLIBDIR="$LIB_DIR" \
-          -DCMAKE_IGNORE_PATH="/usr/lib;/usr/local/lib;/opt/homebrew/lib" \
-          -DPYTHON_LIBRARY="$PY_LIB" \
-          -DPYTHON_INCLUDE_DIR="$PY_INC_DIR" \
-          -DPYTHON_VERSION=3.13 \
-          -DWITH_OPENAL=OFF \
-          -DWITH_CODEC_SNDFILE=OFF \
-          -DWITH_ALEMBIC=OFF \
-          -DWITH_OPENSUBDIV=OFF \
-          -DWITH_CYCLES_OSL=OFF
+      # 5. Configure CMake (Metal & Cycles Enabled)
+      - name: Configure CMake
+        working-directory: blender
+        run: |
+          cmake -S . -B ../build_ios -G Xcode \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=${{ env.IPADOS_TARGET }} \
+            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED="NO" \
+            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED="NO" \
+            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY="" \
+            -DWITH_GHOST_SDL=OFF \
+            -DWITH_METAL_BACKEND=ON \
+            -DWITH_CYCLES_DEVICE_METAL=ON \
+            -DWITH_CYCLES_OSL=OFF \
+            -DWITH_PYTHON_INSTALL=OFF
 
-    - name: Build Blender App
-      working-directory: ${{ github.workspace }}/build_ios
-      run: |
-        xcodebuild -project Blender.xcodeproj \
-          -scheme Blender \
-          -configuration Release \
-          -destination 'generic/platform=iOS' \
-          CODE_SIGN_IDENTITY="" \
-          CODE_SIGNING_REQUIRED=NO \
-          CODE_SIGNING_ALLOWED=NO \
-          -allowProvisioningUpdates
+      # 6. Build Blender (Parallel)
+      - name: Build with Xcode
+        run: |
+          cmake --build build_ios --config Release --target install --parallel $(sysctl -n hw.ncpu)
 
-    - name: Package into IPA
-      run: |
-        cd ${{ github.workspace }}/build_ios/Release-iphoneos
-        mkdir Payload
-        cp -r Blender.app Payload/
-        zip -r Blender_iPad.ipa Payload
+      # 7. Enable File Sharing (Crucial for iPad)
+      # Without this, you cannot get .blend files IN or OUT of the iPad.
+      - name: Patch Info.plist for File Sharing
+        run: |
+          PLIST="build_ios/Release-iphoneos/Blender.app/Info.plist"
+          /usr/libexec/PlistBuddy -c "Add :UIFileSharingEnabled bool true" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :LSSupportsOpeningDocumentsInPlace bool true" "$PLIST"
 
-    - name: Upload Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: Blender-iPad-Build
-        path: ${{ github.workspace }}/build_ios/Release-iphoneos/Blender_iPad.ipa
+      # 8. Package IPA
+      - name: Create IPA Package
+        run: |
+          mkdir -p BlenderIPA/Payload
+          cp -R build_ios/Release-iphoneos/Blender.app BlenderIPA/Payload/
+          cd BlenderIPA
+          zip -r ../Blender_Metal_iPad.ipa Payload
+
+      # 9. Upload
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Blender_Metal_iPad_${{ env.IPADOS_TARGET }}
+          path: Blender_Metal_iPad.ipa
