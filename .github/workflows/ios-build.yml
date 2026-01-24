@@ -1,11 +1,11 @@
-name: Build Blender for iPad (Surgical Fix)
+name: Build Blender for iPad (Debug Libs)
 
 on:
   workflow_dispatch: # Manual trigger
 
 jobs:
   build:
-    runs-on: macos-15 # Xcode 16.0 (Clang 16.0)
+    runs-on: macos-15 # Xcode 16.0
     
     steps:
     - name: Select Latest Xcode
@@ -15,22 +15,20 @@ jobs:
 
     - name: Install System Tools
       run: |
-        brew install cmake git-lfs
+        brew install cmake git-lfs tree
         git lfs install --skip-smudge
 
     - name: Setup Workspace
       working-directory: ${{ github.workspace }}
       run: |
         echo "=========================================="
-        echo "   SETTING UP WORKSPACE (MAIN BRANCH)     "
+        echo "   SETTING UP WORKSPACE                   "
         echo "=========================================="
         
-        # 1. Clone Source Code (MAIN BRANCH)
-        echo ">>> Cloning Blender Source (main)..."
+        # 1. Clone Source Code
         git clone --branch main --depth 1 https://projects.blender.org/blender/blender.git blender
         
-        # 2. PULL SOURCE LFS
-        echo ">>> Pulling Source Assets..."
+        # 2. Pull Source Assets
         cd blender
         git lfs install --local
         git lfs pull
@@ -40,41 +38,49 @@ jobs:
         mkdir -p lib
         cd lib
         
-        # 4. Clone HOST Libraries (macOS)
-        echo ">>> Cloning macOS libs..."
+        # 4. Clone Host & Target Libs
+        echo ">>> Cloning Libs..."
         git clone --depth 1 https://projects.blender.org/blender/lib-macos_arm64.git macos_arm64
-        
-        # 5. Clone TARGET Libraries (iOS)
-        echo ">>> Cloning iOS libs..."
         git clone --depth 1 https://projects.blender.org/blender/lib-ios_arm64.git ios_arm64
         
-        # 6. Force LFS for Libraries
-        echo ">>> Pulling Library Binaries..."
+        # 5. Force LFS
+        echo ">>> Pulling Binaries..."
         cd macos_arm64 && git lfs install --local && git lfs pull && cd ..
         cd ios_arm64 && git lfs install --local && git lfs pull && cd ..
         
-        # 7. Create EXTENSIVE Aliases (Link Party)
-        # We ensure every possible name exists to prevent "Missing Libs" errors
+        # 6. Create Aliases (Crucial Step)
+        echo ">>> Creating Symlinks..."
         ln -s macos_arm64 darwin
-        ln -s macos_arm64 macos
         ln -s ios_arm64 arm64
-        ln -s ios_arm64 ios
 
     - name: Surgical Compiler Patch
       working-directory: ${{ github.workspace }}/blender
       run: |
-        echo "=========================================="
-        echo "   SURGICAL PATCH OF CMAKELISTS.TXT       "
-        echo "=========================================="
-        
-        # We ONLY replace 'VERSION_LESS "17.0"' with 'VERSION_LESS "15.0"'
-        # This allows Clang 16.0 to pass the check.
-        # It does NOT touch other "17.0" strings (like SDK versions).
-        
+        # Downgrade compiler check from 17.0 to 15.0
         sed -i '' 's/VERSION_LESS "17.0"/VERSION_LESS "15.0"/g' CMakeLists.txt
+
+    - name: DEBUG LIBRARY STRUCTURE (Diagnostic)
+      working-directory: ${{ github.workspace }}/lib
+      run: |
+        echo "=========================================="
+        echo "   LIBRARY DIAGNOSTIC                     "
+        echo "=========================================="
         
-        echo "✅ Patch Applied. Verification:"
-        grep "VERSION_LESS \"15.0\"" CMakeLists.txt || echo "❌ Patch verification failed (might need manual check)"
+        echo "Checking 'darwin' folder..."
+        if [ -d "darwin" ]; then
+            echo "✅ 'darwin' symlink exists."
+            echo "Contents of darwin:"
+            ls -F darwin/ | head -n 10
+        else
+            echo "❌ 'darwin' symlink MISSING."
+        fi
+        
+        echo "Checking 'arm64' folder..."
+        if [ -d "arm64" ]; then
+            echo "✅ 'arm64' symlink exists."
+        else
+            echo "❌ 'arm64' symlink MISSING."
+        fi
 
     - name: Configure CMake
       working-directory: ${{ github.workspace }}
@@ -97,7 +103,6 @@ jobs:
     - name: Build Blender App
       working-directory: ${{ github.workspace }}/build_ios
       run: |
-        # Build Release version
         xcodebuild -project Blender.xcodeproj \
           -scheme Blender \
           -configuration Release \
