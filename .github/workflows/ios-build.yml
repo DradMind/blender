@@ -19,8 +19,9 @@ jobs:
         git lfs install --skip-smudge
 
     - name: Checkout Code
-      run: |
-        git clone --branch ios --depth 1 https://projects.blender.org/blender/blender.git blender_src
+      uses: actions/checkout@v4
+      with:
+        path: blender_src
 
     - name: Download Libraries
       working-directory: ${{ github.workspace }}/blender_src
@@ -122,7 +123,7 @@ jobs:
           -DCMAKE_OSX_ARCHITECTURES=arm64 \
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO \
-          -DCMAKE_XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET=16.0 \
+          -DCMAKE_XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET=26.0 \
           -DLIBDIR="${{ env.BLENDER_LIBDIR }}" \
           "${{ github.workspace }}/blender_src"
 
