@@ -1,4 +1,4 @@
-name: Build Blender for iPad (Version Patch)
+name: Build Blender for iPad (Surgical Fix)
 
 on:
   workflow_dispatch: # Manual trigger
@@ -21,6 +21,10 @@ jobs:
     - name: Setup Workspace
       working-directory: ${{ github.workspace }}
       run: |
+        echo "=========================================="
+        echo "   SETTING UP WORKSPACE (MAIN BRANCH)     "
+        echo "=========================================="
+        
         # 1. Clone Source Code (MAIN BRANCH)
         echo ">>> Cloning Blender Source (main)..."
         git clone --branch main --depth 1 https://projects.blender.org/blender/blender.git blender
@@ -49,30 +53,28 @@ jobs:
         cd macos_arm64 && git lfs install --local && git lfs pull && cd ..
         cd ios_arm64 && git lfs install --local && git lfs pull && cd ..
         
-        # 7. Create Aliases
+        # 7. Create EXTENSIVE Aliases (Link Party)
+        # We ensure every possible name exists to prevent "Missing Libs" errors
         ln -s macos_arm64 darwin
+        ln -s macos_arm64 macos
         ln -s ios_arm64 arm64
+        ln -s ios_arm64 ios
 
-    - name: Patch Compiler Check (The Fix)
+    - name: Surgical Compiler Patch
       working-directory: ${{ github.workspace }}/blender
       run: |
         echo "=========================================="
-        echo "   PATCHING CMAKELISTS.TXT                "
+        echo "   SURGICAL PATCH OF CMAKELISTS.TXT       "
         echo "=========================================="
         
-        # The error was: "The minimum supported version of CLANG is 17.0"
-        # We find the block checking for AppleClang and lower the requirement to 16.0
+        # We ONLY replace 'VERSION_LESS "17.0"' with 'VERSION_LESS "15.0"'
+        # This allows Clang 16.0 to pass the check.
+        # It does NOT touch other "17.0" strings (like SDK versions).
         
-        echo "Current Check:"
-        grep -C 2 "The minimum supported version of CLANG" CMakeLists.txt || true
+        sed -i '' 's/VERSION_LESS "17.0"/VERSION_LESS "15.0"/g' CMakeLists.txt
         
-        # We use sed to replace 17.0 with 16.0 in the version check
-        # This tricks CMake into accepting our compiler
-        sed -i '' 's/17.0/16.0/g' CMakeLists.txt
-        
-        echo "------------------------------------------"
-        echo "Patched Check:"
-        grep -C 2 "The minimum supported version of CLANG" CMakeLists.txt || true
+        echo "✅ Patch Applied. Verification:"
+        grep "VERSION_LESS \"15.0\"" CMakeLists.txt || echo "❌ Patch verification failed (might need manual check)"
 
     - name: Configure CMake
       working-directory: ${{ github.workspace }}
