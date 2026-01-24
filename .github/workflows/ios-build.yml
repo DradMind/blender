@@ -1,11 +1,11 @@
-name: Build Blender for iPad (Manual Construction)
+name: Build Blender for iPad (Video Method)
 
 on:
   workflow_dispatch: # Manual trigger
 
 jobs:
   build:
-    runs-on: macos-15 # Xcode 16 (iOS 18 SDK)
+    runs-on: macos-15 # Xcode 16 (iOS 18 SDK / iPadOS 26 compatible)
     
     steps:
     - name: Select Latest Xcode
@@ -15,98 +15,80 @@ jobs:
 
     - name: Install System Tools
       run: |
-        brew install cmake git-lfs svn tree
+        brew install cmake git-lfs
         git lfs install --skip-smudge
 
-    - name: Checkout Code
-      run: |
-        # Clone Blender Source into 'blender_src'
-        git clone --branch ios --depth 1 https://projects.blender.org/blender/blender.git blender_src
-
-    - name: Construct Libraries Manually
+    - name: Setup Workspace (Sibling Structure)
       working-directory: ${{ github.workspace }}
       run: |
         echo "=========================================="
-        echo "   MANUAL LIBRARY CONSTRUCTION            "
+        echo "   SETTING UP SIBLING STRUCTURE           "
         echo "=========================================="
+        # We need two folders side-by-side:
+        # 1. blender (Source)
+        # 2. lib     (Libraries)
         
-        # 1. Create a clean 'libs' folder at the workspace root
-        mkdir -p libs
-        cd libs
+        # 1. Clone Source
+        echo ">>> Cloning Blender Source..."
+        git clone --branch ios --depth 1 https://projects.blender.org/blender/blender.git blender
         
-        # 2. Clone HOST Libraries (macOS - for building tools)
-        echo ">>> Cloning macOS libraries..."
+        # 2. Setup Libraries Folder
+        echo ">>> Creating Lib folder..."
+        mkdir -p lib
+        cd lib
+        
+        # 3. Clone HOST Libraries (macOS)
+        # Matches 'make update' behavior but safer
+        echo ">>> Cloning macOS libs..."
         git clone --depth 1 https://projects.blender.org/blender/lib-macos_arm64.git macos_arm64
         
-        # 3. Clone TARGET Libraries (iOS - for the app)
-        echo ">>> Cloning iOS libraries..."
+        # 4. Clone TARGET Libraries (iOS)
+        # Matches 'make_update.py --use-ios-libraries' behavior
+        echo ">>> Cloning iOS libs..."
         git clone --depth 1 https://projects.blender.org/blender/lib-ios_arm64.git ios_arm64
         
-        # 4. Force LFS Download (Get the real binary files)
-        echo ">>> Pulling LFS for macOS..."
+        # 5. Force LFS (Crucial step often missed by scripts)
+        echo ">>> Pulling LFS Binary Data..."
+        
         cd macos_arm64
         git lfs install --local
         git lfs pull
         cd ..
         
-        echo ">>> Pulling LFS for iOS..."
         cd ios_arm64
         git lfs install --local
         git lfs pull
         cd ..
         
-        # 5. Create Symlinks (Aliases for CMake)
-        # Link macos_arm64 -> darwin (Host)
+        # 6. Create Aliases (Fixes 'Requirements' error)
+        # Blender looks for 'darwin' (Host) and 'arm64' (Target)
         ln -s macos_arm64 darwin
-        # Link ios_arm64 -> arm64 (Target)
         ln -s ios_arm64 arm64
         
-        # Save absolute path
-        echo "BLENDER_LIBDIR=$(pwd)" >> $GITHUB_ENV
-
-    - name: Generate Library Report (DEBUG)
-      run: |
-        echo "=========================================="
-        echo "      LIBRARY FOLDER STRUCTURE            "
-        echo "=========================================="
-        echo "Root Lib Dir: ${{ env.BLENDER_LIBDIR }}"
-        
-        # Verify specific critical files exist
-        if [ -f "${{ env.BLENDER_LIBDIR }}/darwin/python/bin/python3.11" ]; then
-            echo "✅ HOST CHECK: Python found in darwin/macos_arm64"
-        else
-            echo "❌ HOST FAILURE: Python missing in darwin/macos_arm64"
-        fi
-        
-        if [ -d "${{ env.BLENDER_LIBDIR }}/arm64/python/lib" ]; then
-            echo "✅ TARGET CHECK: Python lib found in arm64/ios_arm64"
-        else
-            echo "❌ TARGET FAILURE: Python lib missing in arm64/ios_arm64"
-        fi
-        
-        # Print directory tree (Level 2 depth) to show structure
-        tree -L 2 "${{ env.BLENDER_LIBDIR }}"
+        echo "✅ Setup Complete. Structure:"
+        ls -F
 
     - name: Configure CMake
+      working-directory: ${{ github.workspace }}
       run: |
-        mkdir -p "${{ github.workspace }}/build_ios"
-        cd "${{ github.workspace }}/build_ios"
+        # We run from the ROOT, just like the video command:
+        # cmake -S blender -B build_ios
         
-        echo "Configuring CMake..."
-        echo "Using Libs at: ${{ env.BLENDER_LIBDIR }}"
-        
+        # We add explicit flags for CI safety:
         cmake -G Xcode \
+          -S blender \
+          -B build_ios \
           -DCMAKE_SYSTEM_NAME=iOS \
           -DCMAKE_OSX_ARCHITECTURES=arm64 \
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO \
           -DCMAKE_XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET=16.0 \
-          -DLIBDIR="${{ env.BLENDER_LIBDIR }}" \
-          "${{ github.workspace }}/blender_src"
+          -DLIBDIR="${{ github.workspace }}/lib"
 
     - name: Build Blender App
+      working-directory: ${{ github.workspace }}
       run: |
-        cd "${{ github.workspace }}/build_ios"
+        cd build_ios
         
         xcodebuild -project Blender.xcodeproj \
           -scheme Blender \
@@ -119,7 +101,7 @@ jobs:
 
     - name: Package into IPA
       run: |
-        cd "${{ github.workspace }}/build_ios/Release-iphoneos"
+        cd build_ios/Release-iphoneos
         mkdir Payload
         cp -r Blender.app Payload/
         zip -r Blender_iPad.ipa Payload
@@ -128,4 +110,4 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: Blender-iPad-Build
-        path: ${{ github.workspace }}/build_ios/Release-iphoneos/Blender_iPad.ipa
+        path: build_ios/Release-iphoneos/Blender_iPad.ipa
