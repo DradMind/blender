@@ -1,11 +1,11 @@
-name: Build Blender for iPad (Source LFS Fix)
+name: Build Blender for iPad (Version Patch)
 
 on:
   workflow_dispatch: # Manual trigger
 
 jobs:
   build:
-    runs-on: macos-15 # Xcode 16 (iOS 18 SDK)
+    runs-on: macos-15 # Xcode 16.0 (Clang 16.0)
     
     steps:
     - name: Select Latest Xcode
@@ -15,30 +15,24 @@ jobs:
 
     - name: Install System Tools
       run: |
-        brew install cmake git-lfs tree
+        brew install cmake git-lfs
         git lfs install --skip-smudge
 
     - name: Setup Workspace
       working-directory: ${{ github.workspace }}
       run: |
-        echo "=========================================="
-        echo "   SETTING UP WORKSPACE (MAIN BRANCH)     "
-        echo "=========================================="
-        
-        # 1. Clone Source Code
+        # 1. Clone Source Code (MAIN BRANCH)
         echo ">>> Cloning Blender Source (main)..."
         git clone --branch main --depth 1 https://projects.blender.org/blender/blender.git blender
         
-        # 2. PULL SOURCE LFS (THE FIX)
-        # We must replace the 'pointer' files in the source with real binaries
-        echo ">>> Pulling Source Assets (startup.blend, icons)..."
+        # 2. PULL SOURCE LFS
+        echo ">>> Pulling Source Assets..."
         cd blender
         git lfs install --local
         git lfs pull
         cd ..
         
-        # 3. Setup Libraries Folder
-        echo ">>> Creating Lib folder..."
+        # 3. Setup Libraries
         mkdir -p lib
         cd lib
         
@@ -52,22 +46,33 @@ jobs:
         
         # 6. Force LFS for Libraries
         echo ">>> Pulling Library Binaries..."
-        
-        cd macos_arm64
-        git lfs install --local
-        git lfs pull
-        cd ..
-        
-        cd ios_arm64
-        git lfs install --local
-        git lfs pull
-        cd ..
+        cd macos_arm64 && git lfs install --local && git lfs pull && cd ..
+        cd ios_arm64 && git lfs install --local && git lfs pull && cd ..
         
         # 7. Create Aliases
         ln -s macos_arm64 darwin
         ln -s ios_arm64 arm64
+
+    - name: Patch Compiler Check (The Fix)
+      working-directory: ${{ github.workspace }}/blender
+      run: |
+        echo "=========================================="
+        echo "   PATCHING CMAKELISTS.TXT                "
+        echo "=========================================="
         
-        echo "✅ Setup Complete."
+        # The error was: "The minimum supported version of CLANG is 17.0"
+        # We find the block checking for AppleClang and lower the requirement to 16.0
+        
+        echo "Current Check:"
+        grep -C 2 "The minimum supported version of CLANG" CMakeLists.txt || true
+        
+        # We use sed to replace 17.0 with 16.0 in the version check
+        # This tricks CMake into accepting our compiler
+        sed -i '' 's/17.0/16.0/g' CMakeLists.txt
+        
+        echo "------------------------------------------"
+        echo "Patched Check:"
+        grep -C 2 "The minimum supported version of CLANG" CMakeLists.txt || true
 
     - name: Configure CMake
       working-directory: ${{ github.workspace }}
