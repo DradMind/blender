@@ -1,153 +1,160 @@
 name: Build Blender for iPad (Search & Rescue)
 
 on:
-  workflow_dispatch: # Manual trigger
+  workflow_dispatch:
+  push:
+    branches: [ "main", "ipados-26-build" ]
+  pull_request:
+    branches: [ "main" ]
 
 jobs:
   build:
-    runs-on: macos-15 # Xcode 16 (iOS 18 SDK)
+    runs-on: macos-14 # Xcode 15 (iOS 17 SDK)
     
     steps:
-    - name: Select Latest Xcode
-      run: |
-        sudo xcode-select -s /Applications/Xcode_16.0.app/Contents/Developer || sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
-        xcodebuild -version
+      - name: Select Latest Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode_16.0.app/Contents/Developer || sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcodebuild -version
 
-    - name: Install System Tools
-      run: |
-        brew install cmake git-lfs svn
-        git lfs install --skip-smudge
+      - name: Install System Tools
+        run: |
+          brew install cmake git-lfs svn
+          git lfs install --skip-smudge
 
-    - name: Checkout Code
-      run: |
-        git clone --branch ios --depth 1 https://projects.blender.org/blender/blender.git blender_src
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          path: blender_src
 
-    - name: Download Libraries
-      working-directory: ${{ github.workspace }}/blender_src
-      run: |
-        # We run the updates. We don't care where they put the files yet.
-        # We will find them in the next step.
-        echo ">>> Downloading Host (macOS)..."
-        make update || true  # Allow fail, we fix later
-        
-        echo ">>> Downloading Target (iOS)..."
-        python3 build_files/utils/make_update.py --use-ios-libraries || true
+      - name: Download Libraries
+        working-directory: ${{ github.workspace }}/blender_src
+        run: |
+          # We run the updates. We don't care where they put the files yet.
+          # We will find them in the next step.
+          echo ">>> Downloading Host (macOS)..."
+          make update || true  # Allow fail, we fix later
 
-    - name: Search & Rescue Libraries
-      id: rescue_libs
-      run: |
-        echo "=========================================="
-        echo "   SEARCH & RESCUE LIBRARIES              "
-        echo "=========================================="
-        
-        # 1. FIND THEM
-        # Search for 'ios_arm64' anywhere in the workspace
-        FOUND_IOS=$(find "${{ github.workspace }}" -type d -name "ios_arm64" -print -quit)
-        
-        if [ -z "$FOUND_IOS" ]; then
-            echo "❌ CRITICAL: Libraries were not downloaded anywhere!"
-            exit 1
-        fi
-        
-        echo "✅ Found iOS libs at: $FOUND_IOS"
-        
-        # Determine where the download script put the root 'lib' folder
-        # If found at .../lib/ios_arm64, the root is .../lib
-        CURRENT_LIB_ROOT=$(dirname "$FOUND_IOS")
-        TARGET_LIB_ROOT="${{ github.workspace }}/blender_src/lib"
-        
-        echo "✅ Current Lib Root: $CURRENT_LIB_ROOT"
-        echo "🎯 Target Lib Root:  $TARGET_LIB_ROOT"
-        
-        # 2. MOVE THEM (If they aren't already in the right place)
-        if [ "$CURRENT_LIB_ROOT" != "$TARGET_LIB_ROOT" ]; then
-            echo "🚚 Moving libraries to target location..."
-            mkdir -p "$TARGET_LIB_ROOT"
-            # We move the CONTENTS of the found lib folder to the target
-            cp -R "$CURRENT_LIB_ROOT/" "$TARGET_LIB_ROOT/"
-        else
-            echo "✅ Libraries are already in the correct location."
-        fi
-        
-        # 3. FORCE LFS PULL (Fix empty files)
-        # We now know for a fact the files are at $TARGET_LIB_ROOT
-        
-        echo "force-pulling Host (macOS)..."
-        if [ -d "$TARGET_LIB_ROOT/macos_arm64" ]; then
-            cd "$TARGET_LIB_ROOT/macos_arm64"
-            git lfs install --local
-            git lfs pull
-        else
-            echo "⚠️ Host libs missing. Attempting to clone manually..."
-            cd "$TARGET_LIB_ROOT"
-            git clone https://projects.blender.org/blender/lib-macos_arm64.git macos_arm64
-        fi
-        
-        echo "force-pulling Target (iOS)..."
-        if [ -d "$TARGET_LIB_ROOT/ios_arm64" ]; then
-            cd "$TARGET_LIB_ROOT/ios_arm64"
-            git lfs install --local
-            git lfs pull
-        fi
+          echo ">>> Downloading Target (iOS)..."
+          # Manual clone since make_update.py in this branch lacks the flag
+          mkdir -p lib
+          git clone https://projects.blender.org/blender/lib-ios_arm64.git lib/ios_arm64
 
-        # 4. FORCE ALIASES (Fix naming errors)
-        cd "$TARGET_LIB_ROOT"
-        
-        # Link ios_arm64 -> arm64 (Fixes 'IOS build requires...' error)
-        if [ -d "ios_arm64" ]; then
-            ln -sf ios_arm64 arm64
-            ln -sf ios_arm64 ios
-        fi
-        
-        # Link macos_arm64 -> darwin (Fixes Host Tools error)
-        if [ -d "macos_arm64" ]; then
-            ln -sf macos_arm64 darwin
-            ln -sf macos_arm64 macos
-        fi
-        
-        echo "✅ FINAL CONTENTS OF $TARGET_LIB_ROOT:"
-        ls -F
-        
-        echo "BLENDER_LIBDIR=$TARGET_LIB_ROOT" >> $GITHUB_ENV
+      - name: Search & Rescue Libraries
+        id: rescue_libs
+        run: |
+          echo "=========================================="
+          echo "   SEARCH & RESCUE LIBRARIES              "
+          echo "=========================================="
+          
+          # 1. FIND THEM
+          # Search for 'ios_arm64' anywhere in the workspace
+          FOUND_IOS=$(find "${{ github.workspace }}" -type d -name "ios_arm64" -print -quit)
+          
+          if [ -z "$FOUND_IOS" ]; then
+              echo "❌ CRITICAL: Libraries were not downloaded anywhere!"
+              exit 1
+          fi
+          
+          echo "✅ Found iOS libs at: $FOUND_IOS"
+          
+          # Determine where the download script put the root 'lib' folder
+          # If found at .../lib/ios_arm64, the root is .../lib
+          CURRENT_LIB_ROOT=$(dirname "$FOUND_IOS")
+          TARGET_LIB_ROOT="${{ github.workspace }}/blender_src/lib"
+          
+          echo "✅ Current Lib Root: $CURRENT_LIB_ROOT"
+          echo "🎯 Target Lib Root:  $TARGET_LIB_ROOT"
+          
+          # 2. MOVE THEM (If they aren't already in the right place)
+          if [ "$CURRENT_LIB_ROOT" != "$TARGET_LIB_ROOT" ]; then
+              echo "🚚 Moving libraries to target location..."
+              mkdir -p "$TARGET_LIB_ROOT"
+              # We move the CONTENTS of the found lib folder to the target
+              cp -R "$CURRENT_LIB_ROOT/" "$TARGET_LIB_ROOT/"
+          else
+              echo "✅ Libraries are already in the correct location."
+          fi
+          
+          # 3. FORCE LFS PULL (Fix empty files)
+          # We now know for a fact the files are at $TARGET_LIB_ROOT
+          
+          echo "force-pulling Host (macOS)..."
+          if [ -d "$TARGET_LIB_ROOT/macos_arm64" ]; then
+              cd "$TARGET_LIB_ROOT/macos_arm64"
+              git lfs install --local
+              git lfs pull
+          else
+              echo "⚠️ Host libs missing. Attempting to clone manually..."
+              cd "$TARGET_LIB_ROOT"
+              git clone https://projects.blender.org/blender/lib-macos_arm64.git macos_arm64
+          fi
+          
+          echo "force-pulling Target (iOS)..."
+          if [ -d "$TARGET_LIB_ROOT/ios_arm64" ]; then
+              cd "$TARGET_LIB_ROOT/ios_arm64"
+              git lfs install --local
+              git lfs pull
+          fi
 
-    - name: Configure CMake
-      run: |
-        mkdir -p "${{ github.workspace }}/build_ios"
-        cd "${{ github.workspace }}/build_ios"
-        
-        echo "Configuring CMake..."
-        
-        cmake -G Xcode \
-          -DCMAKE_SYSTEM_NAME=iOS \
-          -DCMAKE_OSX_ARCHITECTURES=arm64 \
-          -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
-          -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO \
-          -DCMAKE_XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET=16.0 \
-          -DLIBDIR="${{ env.BLENDER_LIBDIR }}" \
-          "${{ github.workspace }}/blender_src"
+          # 4. FORCE ALIASES (Fix naming errors)
+          cd "$TARGET_LIB_ROOT"
+          
+          # Link ios_arm64 -> arm64 (Fixes 'IOS build requires...' error)
+          if [ -d "ios_arm64" ]; then
+              ln -sf ios_arm64 arm64
+              ln -sf ios_arm64 ios
+          fi
+          
+          # Link macos_arm64 -> darwin (Fixes Host Tools error)
+          if [ -d "macos_arm64" ]; then
+              ln -sf macos_arm64 darwin
+              ln -sf macos_arm64 macos
+          fi
+          
+          echo "✅ FINAL CONTENTS OF $TARGET_LIB_ROOT:"
+          ls -F
+          
+          echo "BLENDER_LIBDIR=$TARGET_LIB_ROOT" >> $GITHUB_ENV
 
-    - name: Build Blender App
-      run: |
-        cd "${{ github.workspace }}/build_ios"
-        
-        xcodebuild -project Blender.xcodeproj \
-          -scheme Blender \
-          -configuration Release \
-          -destination 'generic/platform=iOS' \
-          CODE_SIGN_IDENTITY="" \
-          CODE_SIGNING_REQUIRED=NO \
-          CODE_SIGNING_ALLOWED=NO \
-          -allowProvisioningUpdates
+      - name: Configure CMake
+        run: |
+          mkdir -p "${{ github.workspace }}/build_ios"
+          cd "${{ github.workspace }}/build_ios"
+          
+          echo "Configuring CMake..."
+          
+          cmake -G Xcode \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
+            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO \
+            -DCMAKE_XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET=17.0 \
+            -DLIBDIR="${{ env.BLENDER_LIBDIR }}" \
+            "${{ github.workspace }}/blender_src"
 
-    - name: Package into IPA
-      run: |
-        cd "${{ github.workspace }}/build_ios/Release-iphoneos"
-        mkdir Payload
-        cp -r Blender.app Payload/
-        zip -r Blender_iPad.ipa Payload
+      - name: Build Blender App
+        run: |
+          cd "${{ github.workspace }}/build_ios"
+          
+          xcodebuild -project Blender.xcodeproj \
+            -scheme Blender \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            -allowProvisioningUpdates
 
-    - name: Upload Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: Blender-iPad-Build
-        path: ${{ github.workspace }}/build_ios/Release-iphoneos/Blender_iPad.ipa
+      - name: Package into IPA
+        run: |
+          cd "${{ github.workspace }}/build_ios/Release-iphoneos"
+          mkdir Payload
+          cp -r Blender.app Payload/
+          zip -r Blender_iPad.ipa Payload
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Blender-iPad-Build
+          path: ${{ github.workspace }}/build_ios/Release-iphoneos/Blender_iPad.ipa
