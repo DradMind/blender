@@ -1,4 +1,4 @@
-name: Build Blender for iPad (Search & Build)
+name: Build Blender for iPad (Library Root Fix)
 
 on:
   workflow_dispatch: # Manual trigger
@@ -57,49 +57,6 @@ jobs:
         # 2. Disable Fatal Error for Mac Libs
         sed -i '' 's/message(FATAL_ERROR/message(STATUS/g' build_files/cmake/platform/platform_apple.cmake
 
-    - name: FIND PYTHON (The Ultimate Search)
-      id: find_py
-      working-directory: ${{ github.workspace }}/lib
-      run: |
-        echo "=========================================="
-        echo "   SEARCHING FOR PYTHON ANYWHERE          "
-        echo "=========================================="
-        
-        # Search efficiently for the static library
-        # We start at the lib root and go 5 levels deep
-        PY_LIB_REL=$(find . -maxdepth 5 -name "libpython3.13.a" | head -n 1)
-        
-        if [ -z "$PY_LIB_REL" ]; then
-            echo "❌ CRITICAL: Could not find libpython3.13.a anywhere!"
-            echo "Dumping structure of darwin:"
-            find darwin -maxdepth 3
-            exit 1
-        fi
-        
-        # Convert to absolute path
-        PY_LIB_ABS=$(pwd)/${PY_LIB_REL#./}
-        echo "✅ FOUND LIBRARY: $PY_LIB_ABS"
-        
-        # Find the include folder (looking for Python.h nearby)
-        # We look relative to the library we just found
-        PY_LIB_DIR=$(dirname "$PY_LIB_ABS")
-        
-        # Usually headers are in ../include/python3.13 relative to the lib folder
-        # Or we just search for Python.h
-        PY_HEADER_REL=$(find . -maxdepth 5 -name "Python.h" | head -n 1)
-        
-        if [ -z "$PY_HEADER_REL" ]; then
-             echo "❌ Header not found. This is weird."
-             exit 1
-        fi
-        
-        # The include dir is the folder containing Python.h
-        PY_INC_ABS=$(dirname "$(pwd)/${PY_HEADER_REL#./}")
-        echo "✅ FOUND INCLUDE: $PY_INC_ABS"
-        
-        echo "PY_LIB_PATH=$PY_LIB_ABS" >> $GITHUB_ENV
-        echo "PY_INC_PATH=$PY_INC_ABS" >> $GITHUB_ENV
-
     - name: Configure CMake
       working-directory: ${{ github.workspace }}
       run: |
@@ -107,6 +64,13 @@ jobs:
         LIB_DIR="${{ github.workspace }}/lib"
         
         echo "Configuring CMake..."
+        
+        # We find Python dynamically to be safe
+        PY_LIB=$(find "$LIB_DIR/darwin" -name "libpython3.13.a" | head -n 1)
+        PY_INC_DIR=$(dirname $(find "$LIB_DIR/darwin" -name "Python.h" | head -n 1))
+        
+        # We explicitly set CMAKE_PREFIX_PATH to force finding our libs
+        # And we disable searching system paths
         
         cmake -G Xcode \
           -S "$SOURCE_DIR" \
@@ -117,9 +81,15 @@ jobs:
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO \
           -DCMAKE_XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET=16.0 \
           -DLIBDIR="$LIB_DIR" \
-          -DPYTHON_LIBRARY="${{ env.PY_LIB_PATH }}" \
-          -DPYTHON_INCLUDE_DIR="${{ env.PY_INC_PATH }}" \
-          -DPYTHON_VERSION=3.13
+          -DCMAKE_IGNORE_PATH="/usr/lib;/usr/local/lib;/opt/homebrew/lib" \
+          -DPYTHON_LIBRARY="$PY_LIB" \
+          -DPYTHON_INCLUDE_DIR="$PY_INC_DIR" \
+          -DPYTHON_VERSION=3.13 \
+          -DWITH_OPENAL=OFF \
+          -DWITH_CODEC_SNDFILE=OFF \
+          -DWITH_ALEMBIC=OFF \
+          -DWITH_OPENSUBDIV=OFF \
+          -DWITH_CYCLES_OSL=OFF
 
     - name: Build Blender App
       working-directory: ${{ github.workspace }}/build_ios
