@@ -1,4 +1,4 @@
-name: Build Blender iPad (Robust)
+name: Build Blender iPad (Explicit Install)
 
 on:
   workflow_dispatch: # Manual trigger
@@ -44,16 +44,21 @@ jobs:
           git lfs checkout
           python3 ./build_files/utils/make_update.py --use-ios-libraries
 
-      # 5. Configure CMake
+      # 5. Configure CMake (With Explicit Install Path)
       - name: Configure CMake
         working-directory: blender
         run: |
+          # Define paths clearly
           IOS_LIB_PATH="$(pwd)/lib/ios_arm64"
-          echo "Using Library Path: $IOS_LIB_PATH"
+          INSTALL_DIR="$(pwd)/../install_ios"
+          
+          echo "Libraries: $IOS_LIB_PATH"
+          echo "Installing to: $INSTALL_DIR"
 
           cmake -S . -B ../build_ios -G Xcode \
             -DCMAKE_SYSTEM_NAME=iOS \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=${{ env.IPADOS_TARGET }} \
+            -DCMAKE_INSTALL_PREFIX="$INSTALL_DIR" \
             -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED="NO" \
             -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED="NO" \
             -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY="" \
@@ -77,44 +82,38 @@ jobs:
             -DWITH_GMP=OFF \
             -DWITH_HARU=OFF
 
-      # 6. Build Blender (Changed: Removed --target install)
+      # 6. Build AND Install
       - name: Build with Xcode
         run: |
-          # We simply build the 'Release' config. This generates the .app
-          cmake --build build_ios --config Release --parallel $(sysctl -n hw.ncpu)
+          # 'install' target forces the app to be assembled in our custom folder
+          cmake --build build_ios --config Release --target install --parallel $(sysctl -n hw.ncpu)
 
-      # 7. Locate and Package IPA (The Fix!)
-      # This step searches for Blender.app wherever it is, moves it, and zips it.
-      - name: Find and Package IPA
+      # 7. Package IPA (From the specific install folder)
+      - name: Create IPA Package
         run: |
-          echo "Searching for Blender.app..."
-          # Find the directory ending in Blender.app inside build_ios
-          APP_PATH=$(find build_ios -name "Blender.app" -type d | head -n 1)
+          # Go to the install directory we defined
+          cd install_ios
           
-          if [ -z "$APP_PATH" ]; then
-            echo "::error::Blender.app not found! Listing build directory for debugging:"
-            ls -R build_ios
-            exit 1
+          # Verify we have the right structure (iOS app should not have Contents/MacOS)
+          if [ ! -d "Blender.app" ]; then
+             echo "::error::Blender.app missing in install_ios!"
+             ls -R
+             exit 1
           fi
-          
-          echo "Found Blender.app at: $APP_PATH"
-          
-          # Patch the Info.plist for File Sharing (crucial step from before)
-          PLIST="$APP_PATH/Info.plist"
-          /usr/libexec/PlistBuddy -c "Add :UIFileSharingEnabled bool true" "$PLIST" || echo "Plist entry exists"
-          /usr/libexec/PlistBuddy -c "Add :LSSupportsOpeningDocumentsInPlace bool true" "$PLIST" || echo "Plist entry exists"
 
-          # Create Payload structure for IPA
-          mkdir -p BlenderIPA/Payload
-          cp -R "$APP_PATH" BlenderIPA/Payload/
-          
-          # Zip it up
-          cd BlenderIPA
-          zip -r ../Blender_Metal_iPad.ipa Payload
+          # Patch Info.plist
+          PLIST="Blender.app/Info.plist"
+          /usr/libexec/PlistBuddy -c "Add :UIFileSharingEnabled bool true" "$PLIST" || true
+          /usr/libexec/PlistBuddy -c "Add :LSSupportsOpeningDocumentsInPlace bool true" "$PLIST" || true
+
+          # Create Payload and Zip
+          mkdir Payload
+          cp -R Blender.app Payload/
+          zip -r ../Blender_iPad_Install.ipa Payload
 
       # 8. Upload
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: Blender_iPad_Final_Build
-          path: Blender_Metal_iPad.ipa
+          name: Blender_iPad_Install_Build
+          path: Blender_iPad_Install.ipa
