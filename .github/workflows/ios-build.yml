@@ -1,7 +1,11 @@
 name: Build Blender for iPad (Search & Rescue)
 
 on:
-  workflow_dispatch: # Manual trigger
+  workflow_dispatch:
+  push:
+    branches: [ "main", "ipados-26-build" ]
+  pull_request:
+    branches: [ "main" ]
 
 jobs:
   build:
