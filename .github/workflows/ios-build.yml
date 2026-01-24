@@ -1,4 +1,4 @@
-name: Build Blender for iPad (Video Method)
+name: Build Blender for iPad (Manual & Verified)
 
 on:
   workflow_dispatch: # Manual trigger
@@ -15,7 +15,7 @@ jobs:
 
     - name: Install System Tools
       run: |
-        brew install cmake git-lfs
+        brew install cmake git-lfs tree
         git lfs install --skip-smudge
 
     - name: Setup Workspace (Sibling Structure)
@@ -24,30 +24,28 @@ jobs:
         echo "=========================================="
         echo "   SETTING UP SIBLING STRUCTURE           "
         echo "=========================================="
-        # We need two folders side-by-side:
-        # 1. blender (Source)
-        # 2. lib     (Libraries)
         
-        # 1. Clone Source
+        # 1. Clone Source Code into 'blender'
         echo ">>> Cloning Blender Source..."
         git clone --branch ios --depth 1 https://projects.blender.org/blender/blender.git blender
         
-        # 2. Setup Libraries Folder
+        # 2. Setup Libraries Folder at Root (Sibling)
+        # The error explicitly asked for libs at: /Users/runner/work/blender/blender/lib
+        # This matches ${{ github.workspace }}/lib
         echo ">>> Creating Lib folder..."
         mkdir -p lib
         cd lib
         
         # 3. Clone HOST Libraries (macOS)
-        # Matches 'make update' behavior but safer
-        echo ">>> Cloning macOS libs..."
+        echo ">>> Cloning macOS libs (Host)..."
         git clone --depth 1 https://projects.blender.org/blender/lib-macos_arm64.git macos_arm64
         
         # 4. Clone TARGET Libraries (iOS)
-        # Matches 'make_update.py --use-ios-libraries' behavior
-        echo ">>> Cloning iOS libs..."
+        echo ">>> Cloning iOS libs (Target)..."
         git clone --depth 1 https://projects.blender.org/blender/lib-ios_arm64.git ios_arm64
         
-        # 5. Force LFS (Crucial step often missed by scripts)
+        # 5. Force LFS Download (CRITICAL)
+        # We assume the clones above only got pointers. We force the real data now.
         echo ">>> Pulling LFS Binary Data..."
         
         cd macos_arm64
@@ -60,36 +58,67 @@ jobs:
         git lfs pull
         cd ..
         
-        # 6. Create Aliases (Fixes 'Requirements' error)
-        # Blender looks for 'darwin' (Host) and 'arm64' (Target)
+        # 6. Create Aliases (The Fix for 'requires pre-compiled libs')
+        # CMake needs 'darwin' for host tools and 'arm64' for iOS
         ln -s macos_arm64 darwin
         ln -s ios_arm64 arm64
         
-        echo "✅ Setup Complete. Structure:"
+        echo "✅ Setup Complete."
+
+    - name: Verify Library Integrity
+      working-directory: ${{ github.workspace }}/lib
+      run: |
+        echo "=========================================="
+        echo "      VERIFYING LIBRARY CONTENT           "
+        echo "=========================================="
+        
+        # Check if Python exists (Host)
+        if [ -f "darwin/python/bin/python3.11" ]; then
+             echo "✅ HOST: Python binary found."
+        else
+             echo "❌ HOST FAILURE: Python missing in darwin!"
+             exit 1
+        fi
+        
+        # Check File Size of a known heavy library (Target)
+        # If this is small (<2KB), LFS failed.
+        FILE_SIZE=$(stat -f%z arm64/embree/lib/libmath.a 2>/dev/null || echo 0)
+        echo "Target Lib Size: $FILE_SIZE bytes"
+        
+        if [ "$FILE_SIZE" -lt 2000 ]; then
+             echo "❌ TARGET FAILURE: Library file is too small ($FILE_SIZE bytes). Git LFS failed."
+             exit 1
+        fi
+        
+        echo "✅ SUCCESS: Libraries appear valid and heavy."
+        
+        # Show structure for debugging
         ls -F
 
     - name: Configure CMake
       working-directory: ${{ github.workspace }}
       run: |
-        # We run from the ROOT, just like the video command:
-        # cmake -S blender -B build_ios
+        # Explicitly pointing to source and lib folders
+        SOURCE_DIR="${{ github.workspace }}/blender"
+        LIB_DIR="${{ github.workspace }}/lib"
         
-        # We add explicit flags for CI safety:
+        echo "Configuring CMake..."
+        echo "Source: $SOURCE_DIR"
+        echo "Libs:   $LIB_DIR"
+        
         cmake -G Xcode \
-          -S blender \
+          -S "$SOURCE_DIR" \
           -B build_ios \
           -DCMAKE_SYSTEM_NAME=iOS \
           -DCMAKE_OSX_ARCHITECTURES=arm64 \
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
           -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO \
           -DCMAKE_XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET=16.0 \
-          -DLIBDIR="${{ github.workspace }}/lib"
+          -DLIBDIR="$LIB_DIR"
 
     - name: Build Blender App
-      working-directory: ${{ github.workspace }}
+      working-directory: ${{ github.workspace }}/build_ios
       run: |
-        cd build_ios
-        
         xcodebuild -project Blender.xcodeproj \
           -scheme Blender \
           -configuration Release \
@@ -101,7 +130,7 @@ jobs:
 
     - name: Package into IPA
       run: |
-        cd build_ios/Release-iphoneos
+        cd ${{ github.workspace }}/build_ios/Release-iphoneos
         mkdir Payload
         cp -r Blender.app Payload/
         zip -r Blender_iPad.ipa Payload
@@ -110,4 +139,4 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: Blender-iPad-Build
-        path: build_ios/Release-iphoneos/Blender_iPad.ipa
+        path: ${{ github.workspace }}/build_ios/Release-iphoneos/Blender_iPad.ipa
