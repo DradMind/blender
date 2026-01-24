@@ -1,4 +1,4 @@
-name: Build Blender for iPad (Python Fix)
+name: Build Blender for iPad (Search & Build)
 
 on:
   workflow_dispatch: # Manual trigger
@@ -57,36 +57,46 @@ jobs:
         # 2. Disable Fatal Error for Mac Libs
         sed -i '' 's/message(FATAL_ERROR/message(STATUS/g' build_files/cmake/platform/platform_apple.cmake
 
-    - name: LOCATE PYTHON (The Fix)
+    - name: FIND PYTHON (The Ultimate Search)
       id: find_py
       working-directory: ${{ github.workspace }}/lib
       run: |
         echo "=========================================="
-        echo "   HUNTING FOR PYTHON 3.13                "
+        echo "   SEARCHING FOR PYTHON ANYWHERE          "
         echo "=========================================="
         
-        # Find the Library File (.a)
-        # We look inside darwin (macos_arm64)
-        PY_LIB=$(find darwin -name "libpython3.13.a" | head -n 1)
+        # Search efficiently for the static library
+        # We start at the lib root and go 5 levels deep
+        PY_LIB_REL=$(find . -maxdepth 5 -name "libpython3.13.a" | head -n 1)
         
-        # Find the Header File (Python.h)
-        PY_INC=$(find darwin -name "Python.h" | head -n 1)
-        
-        if [ -z "$PY_LIB" ] || [ -z "$PY_INC" ]; then
-            echo "❌ CRITICAL: Could not find Python 3.13 files!"
-            echo "Listing darwin contents:"
-            find darwin -maxdepth 4 -name "*python*"
+        if [ -z "$PY_LIB_REL" ]; then
+            echo "❌ CRITICAL: Could not find libpython3.13.a anywhere!"
+            echo "Dumping structure of darwin:"
+            find darwin -maxdepth 3
             exit 1
         fi
         
-        # Get absolute paths
-        PY_LIB_ABS="${{ github.workspace }}/lib/$PY_LIB"
-        PY_INC_ABS="${{ github.workspace }}/lib/$(dirname $PY_INC)"
+        # Convert to absolute path
+        PY_LIB_ABS=$(pwd)/${PY_LIB_REL#./}
+        echo "✅ FOUND LIBRARY: $PY_LIB_ABS"
         
-        echo "✅ Found Library: $PY_LIB_ABS"
-        echo "✅ Found Include: $PY_INC_ABS"
+        # Find the include folder (looking for Python.h nearby)
+        # We look relative to the library we just found
+        PY_LIB_DIR=$(dirname "$PY_LIB_ABS")
         
-        # Save to ENV for CMake
+        # Usually headers are in ../include/python3.13 relative to the lib folder
+        # Or we just search for Python.h
+        PY_HEADER_REL=$(find . -maxdepth 5 -name "Python.h" | head -n 1)
+        
+        if [ -z "$PY_HEADER_REL" ]; then
+             echo "❌ Header not found. This is weird."
+             exit 1
+        fi
+        
+        # The include dir is the folder containing Python.h
+        PY_INC_ABS=$(dirname "$(pwd)/${PY_HEADER_REL#./}")
+        echo "✅ FOUND INCLUDE: $PY_INC_ABS"
+        
         echo "PY_LIB_PATH=$PY_LIB_ABS" >> $GITHUB_ENV
         echo "PY_INC_PATH=$PY_INC_ABS" >> $GITHUB_ENV
 
@@ -97,8 +107,6 @@ jobs:
         LIB_DIR="${{ github.workspace }}/lib"
         
         echo "Configuring CMake..."
-        echo "Forcing Python Lib: ${{ env.PY_LIB_PATH }}"
-        echo "Forcing Python Inc: ${{ env.PY_INC_PATH }}"
         
         cmake -G Xcode \
           -S "$SOURCE_DIR" \
