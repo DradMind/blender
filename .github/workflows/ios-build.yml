@@ -1,11 +1,11 @@
-name: Build Blender for iPad (Nuclear Fix)
+name: Build Blender for iPad (Ironclad Fix)
 
 on:
   workflow_dispatch: # Manual trigger
 
 jobs:
   build:
-    runs-on: macos-15 # Xcode 16 (iOS 18 SDK)
+    runs-on: macos-15 # Xcode 16 (iOS 18 SDK / Compatible with iPadOS 26)
     
     steps:
     - name: Select Latest Xcode
@@ -20,77 +20,85 @@ jobs:
 
     - name: Checkout Code
       run: |
+        # Clone Source
         git clone --branch ios --depth 1 https://projects.blender.org/blender/blender.git blender_src
 
-    - name: Download Libraries
+    - name: Download Libraries (Script + Force LFS)
       working-directory: ${{ github.workspace }}/blender_src
       run: |
-        # 1. Download Host Libs (Standard update)
-        echo ">>> Downloading macOS Host Libs..."
+        echo ">>> 1. Running standard make update (Host Libs)..."
         make update
         
-        # 2. Download Target Libs (iOS)
-        echo ">>> Downloading iOS Target Libs..."
+        echo ">>> 2. Running iOS update (Target Libs)..."
         python3 build_files/utils/make_update.py --use-ios-libraries
 
-    - name: Nuclear Library Fix (Consolidate & Link)
-      id: force_layout
+    - name: Manually Verify & Fix Libraries
+      id: fix_libs
       run: |
         echo "=========================================="
-        echo "   FORCING LIBRARY LAYOUT                 "
+        echo "   MANUAL LIBRARY VERIFICATION & FIX      "
         echo "=========================================="
         
-        SRC_DIR="${{ github.workspace }}/blender_src"
-        TARGET_LIB="$SRC_DIR/lib"
+        # 1. LOCATE THE LIBRARIES (Usually in ../lib)
         SIBLING_LIB="${{ github.workspace }}/lib"
         
-        # 1. Ensure Target Directory Exists
-        mkdir -p "$TARGET_LIB"
-        
-        # 2. HUNT & GATHER
-        # If 'make update' put files in the sibling ../lib folder, move them in.
-        if [ -d "$SIBLING_LIB" ]; then
-            echo "✅ Found libraries in sibling folder. Moving them..."
-            cp -R "$SIBLING_LIB/" "$TARGET_LIB/"
+        if [ ! -d "$SIBLING_LIB" ]; then
+             echo "❌ ERROR: Sibling lib folder not found!"
+             exit 1
         fi
         
-        # 3. VERIFY WE HAVE SOMETHING
-        if [ ! -d "$TARGET_LIB/ios_arm64" ] && [ ! -d "$TARGET_LIB/macos_arm64" ]; then
-            echo "❌ CRITICAL: No libraries found in sibling OR source folder!"
-            echo "Searching workspace for 'ios_arm64':"
-            find "${{ github.workspace }}" -maxdepth 4 -name "ios_arm64"
+        echo "✅ Found libraries at: $SIBLING_LIB"
+        
+        # 2. FORCE GIT LFS PULL (The Secret Sauce)
+        # We go into each folder and force it to download real binaries
+        
+        echo ">>> Forcing LFS Pull for HOST (macos_arm64)..."
+        if [ -d "$SIBLING_LIB/macos_arm64" ]; then
+            cd "$SIBLING_LIB/macos_arm64"
+            git lfs install --local
+            git lfs pull
+            cd - > /dev/null
+        else
+            echo "⚠️ Warning: macos_arm64 folder missing!"
+        fi
+        
+        echo ">>> Forcing LFS Pull for TARGET (ios_arm64)..."
+        if [ -d "$SIBLING_LIB/ios_arm64" ]; then
+            cd "$SIBLING_LIB/ios_arm64"
+            git lfs install --local
+            git lfs pull
+            cd - > /dev/null
+        else
+            echo "❌ CRITICAL: ios_arm64 folder missing!"
             exit 1
         fi
+
+        # 3. MOVE TO SOURCE (Consolidate)
+        # The error explicitly asked for libs at: .../blender_src/lib
+        # We will put them EXACTLY there.
         
-        # 4. FORCE ALIASES (The fix for your specific error)
+        TARGET_LIB="${{ github.workspace }}/blender_src/lib"
+        
+        echo ">>> Moving verified libraries to: $TARGET_LIB"
+        mkdir -p "$TARGET_LIB"
+        cp -R "$SIBLING_LIB/" "$TARGET_LIB/"
+        
+        # 4. CREATE ALIASES (Safety Net)
         cd "$TARGET_LIB"
-        echo "Creating symlinks in: $(pwd)"
         
-        # Fix iOS Target: CMake looks for 'arm64' or 'ios'
-        if [ -d "ios_arm64" ]; then
-            ln -sf ios_arm64 arm64
-            ln -sf ios_arm64 ios
-            echo "✅ Linked ios_arm64 -> arm64, ios"
-        else
-            echo "⚠️ WARNING: ios_arm64 missing"
-        fi
-        
-        # Fix macOS Host: CMake looks for 'darwin' or 'macos'
+        # Host Aliases
         if [ -d "macos_arm64" ]; then
             ln -sf macos_arm64 darwin
             ln -sf macos_arm64 macos
-            echo "✅ Linked macos_arm64 -> darwin, macos"
-        else
-             # If macos_arm64 is missing, try to link darwin if it exists (Intel fallback)
-             if [ -d "darwin" ]; then
-                echo "✅ Found existing darwin folder"
-             else
-                echo "❌ CRITICAL: Host libraries (macos/darwin) missing! Build tools will fail."
-             fi
         fi
         
-        # 5. FINAL DEBUG OUTPUT
-        echo "Final Lib Content:"
+        # Target Aliases
+        if [ -d "ios_arm64" ]; then
+            ln -sf ios_arm64 arm64
+            ln -sf ios_arm64 ios
+        fi
+        
+        echo "✅ Final Library Status:"
         ls -F
         
         echo "BLENDER_LIBDIR=$TARGET_LIB" >> $GITHUB_ENV
