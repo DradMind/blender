@@ -1,4 +1,4 @@
-name: Build Blender iPad (Freetype Fix)
+name: Build Blender iPad (Syntax Fixed)
 
 on:
   workflow_dispatch: # Manual trigger
@@ -44,19 +44,8 @@ jobs:
           git lfs checkout
           python3 ./build_files/utils/make_update.py --use-ios-libraries
 
-      # 5. Debug Library Structure (Expanded)
-      # This helps us see exactly where Freetype and others are hiding if this fails again
-      - name: Debug Library Structure
-        working-directory: blender
-        run: |
-          echo "Listing lib/ios_arm64 structure..."
-          # List the top level folders to verify lib names
-          ls -F lib/ios_arm64/
-          echo "--------------------------------"
-          echo "Looking for Freetype..."
-          find lib/ios_arm64 -name "libfreetype*.a"
-
-      # 6. Configure CMake (Freetype + Python Fixed)
+      # 5. Configure CMake (Cleaned Up)
+      # I removed the comments inside the command to prevent the syntax error
       - name: Configure CMake
         working-directory: blender
         run: |
@@ -70,24 +59,17 @@ jobs:
             -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED="NO" \
             -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY="" \
             -DCMAKE_PREFIX_PATH="$IOS_LIB_PATH" \
-            \
             -DWITH_GHOST_SDL=OFF \
             -DWITH_METAL_BACKEND=ON \
             -DWITH_CYCLES_DEVICE_METAL=ON \
             -DWITH_CYCLES_OSL=OFF \
             -DWITH_PYTHON_INSTALL=OFF \
-            \
-            # --- FORCE PYTHON PATHS ---
             -DPYTHON_INCLUDE_DIR="${IOS_LIB_PATH}/python/include/python3.11" \
             -DPYTHON_LIBRARY="${IOS_LIB_PATH}/python/lib/libpython3.11.a" \
             -DPYTHON_INCLUDE_CONFIG_DIR="${IOS_LIB_PATH}/python/include/python3.11" \
-            \
-            # --- FORCE FREETYPE PATHS (New Fix) ---
             -DFREETYPE_INCLUDE_DIR_freetype2="${IOS_LIB_PATH}/freetype/include/freetype2" \
             -DFREETYPE_INCLUDE_DIR_ft2build="${IOS_LIB_PATH}/freetype/include" \
             -DFREETYPE_LIBRARY="${IOS_LIB_PATH}/freetype/lib/libfreetype.a" \
-            \
-            # --- DISABLE PROBLEMATIC LIBS ---
             -DWITH_FFTW3=OFF \
             -DWITH_ALEMBIC=OFF \
             -DWITH_OPENSUBDIV=OFF \
@@ -96,19 +78,20 @@ jobs:
             -DWITH_GMP=OFF \
             -DWITH_HARU=OFF
 
-      # 7. Build Blender
+      # 6. Build Blender
       - name: Build with Xcode
         run: |
+          # Use parallel build for speed
           cmake --build build_ios --config Release --target install --parallel $(sysctl -n hw.ncpu)
 
-      # 8. Patch Info.plist
+      # 7. Patch Info.plist
       - name: Patch Info.plist for File Sharing
         run: |
           PLIST="build_ios/Release-iphoneos/Blender.app/Info.plist"
           /usr/libexec/PlistBuddy -c "Add :UIFileSharingEnabled bool true" "$PLIST"
           /usr/libexec/PlistBuddy -c "Add :LSSupportsOpeningDocumentsInPlace bool true" "$PLIST"
 
-      # 9. Package IPA
+      # 8. Package IPA
       - name: Create IPA Package
         run: |
           mkdir -p BlenderIPA/Payload
@@ -116,9 +99,9 @@ jobs:
           cd BlenderIPA
           zip -r ../Blender_Metal_iPad.ipa Payload
 
-      # 10. Upload
+      # 9. Upload
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: Blender_Metal_iPad_FreetypeFix
+          name: Blender_Metal_iPad_Final
           path: Blender_Metal_iPad.ipa
